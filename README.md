@@ -1,6 +1,3 @@
-Failed to create stream fd: Operation not permitted
-Failed to create stream fd: Operation not permitted
-Failed to create stream fd: Operation not permitted
 # Studyroom
 
 A bilingual Mongolian/English IELTS, TOEFL and SAT study website built from the six supplied study guides and mock-test PDFs. The three collections have their own pages and red, purple and blue accents.
