@@ -1,0 +1,128 @@
+name: Publish visual preview
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - name: Export existing pages as static visuals
+        shell: bash
+        run: |
+          node server/index.mjs > /tmp/studyroom-preview.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" || true' EXIT
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs/promises';
+          import path from 'node:path';
+          import { chromium } from '@playwright/test';
+
+          const origin = 'http://127.0.0.1:3001';
+          const base = '/' + process.env.GITHUB_REPOSITORY.split('/')[1];
+          let ready = false;
+          for (let i = 0; i < 60; i++) {
+            try {
+              const response = await fetch(origin + '/api/health');
+              if (response.ok) { ready = true; break; }
+            } catch {}
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+          if (!ready) throw new Error('Preview server did not start');
+          const catalogResponse = await fetch(origin + '/api/catalog');
+          if (!catalogResponse.ok) throw new Error('Catalog unavailable');
+          const catalog = await catalogResponse.json();
+          const routes = new Set(['/', '/login', '/account']);
+          for (const exam of catalog) {
+            routes.add('/' + exam.id);
+            routes.add('/' + exam.id + '/guide');
+            for (const mode of exam.modes) {
+              routes.add('/' + exam.id + '/tests/' + mode.sample.number);
+              for (const test of mode.tests) routes.add('/' + exam.id + '/tests/' + test.number);
+            }
+          }
+          await fs.mkdir('visual-preview', { recursive: true });
+          await fs.cp('dist/assets', 'visual-preview/assets', { recursive: true });
+          await fs.copyFile('dist/favicon.svg', 'visual-preview/favicon.svg');
+          await fs.writeFile('visual-preview/.nojekyll', '');
+          const browser = await chromium.launch();
+          try {
+            const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+            for (const route of routes) {
+              await page.goto(origin + route, { waitUntil: 'networkidle' });
+              await page.locator('header').waitFor();
+              await page.waitForFunction(() => !document.querySelector('.loading'));
+              if (await page.locator('.error-state').count()) throw new Error('Failed to render ' + route);
+              await page.evaluate(() => document.fonts.ready);
+              const html = await page.evaluate(({ base, routes }) => {
+                const clone = document.documentElement.cloneNode(true);
+                clone.querySelectorAll('script, link[rel="modulepreload"]').forEach(node => node.remove());
+                for (const node of clone.querySelectorAll('[href], [src]')) {
+                  for (const attribute of ['href', 'src']) {
+                    const value = node.getAttribute(attribute);
+                    if (!value?.startsWith('/')) continue;
+                    if (value.startsWith('/api/')) {
+                      node.removeAttribute(attribute);
+                      node.setAttribute('aria-disabled', 'true');
+                    } else if (attribute === 'href' && node.tagName === 'A') {
+                      const url = new URL(value, location.origin);
+                      if (routes.includes(url.pathname)) {
+                        node.setAttribute(attribute, base + (url.pathname === '/' ? '/' : url.pathname + '/') + url.search + url.hash);
+                      } else {
+                        node.removeAttribute(attribute);
+                        node.setAttribute('aria-disabled', 'true');
+                      }
+                    } else {
+                      node.setAttribute(attribute, base + value);
+                    }
+                  }
+                }
+                clone.querySelectorAll('button').forEach(button => {
+                  button.setAttribute('disabled', '');
+                  button.setAttribute('title', 'Visual preview');
+                });
+                return '<!doctype html>\n' + clone.outerHTML;
+              }, { base, routes: [...routes] });
+              const directory = path.join('visual-preview', route.slice(1));
+              await fs.mkdir(directory, { recursive: true });
+              await fs.writeFile(path.join(directory, 'index.html'), html);
+              console.log('Exported', route);
+            }
+          } finally {
+            await browser.close();
+          }
+          NODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: visual-preview
+          path: visual-preview
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: visual-preview
+      - name: Deploy
+        id: deploy
+        uses: actions/deploy-pages@v4
