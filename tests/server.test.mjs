@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import supertest from "supertest";
-import { openDatabase } from "../server/db.mjs";
+import fs from "node:fs";
+import { openDatabase, sqlStatements, toPostgres } from "../server/db.mjs";
 import { createApp } from "../server/app.mjs";
 import { getTest, tests, grade, publicTest } from "../server/tests.mjs";
 const config = {
@@ -61,6 +62,31 @@ const mutate = (agent, method, url, csrf, body) =>
     .set("x-csrf-token", csrf)
     .set("Origin", config.origin)
     .send(body ?? {});
+test("hosted postgres uses portable timestamps, placeholders, and locked-down tables", () => {
+  assert.equal(
+    toPostgres("SELECT * FROM runs WHERE id=? AND exam=?"),
+    "SELECT * FROM runs WHERE id=$1 AND exam=$2",
+  );
+  const schema = fs.readFileSync(
+    new URL("../server/schema.postgres.sql", import.meta.url),
+    "utf8",
+  );
+  const statements = sqlStatements(schema);
+  assert.equal(statements.length, 16);
+  assert.ok(statements.some((s) => s.includes("started_at bigint")));
+  assert.ok(statements.some((s) => s.includes("expires bigint")));
+  assert.equal(
+    statements.filter((s) => s.startsWith("ALTER TABLE") && s.includes("ENABLE ROW LEVEL SECURITY")).length,
+    7,
+  );
+  assert.equal(schema.includes("INSERT OR REPLACE"), false);
+  assert.equal(schema.includes("PRAGMA"), false);
+});
+test("health reports the open database", async () => {
+  const body = (await fixture().agent().get("/api/health").expect(200)).body;
+  assert.equal(body.status, "ok");
+  assert.equal(body.database, "sqlite");
+});
 test("all imported questions have bilingual hints and valid scoring; answer keys are private", () => {
   assert.equal(Object.keys(tests).length, 18);
   assert.equal(

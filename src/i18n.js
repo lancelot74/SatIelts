@@ -128,6 +128,8 @@ export const strings = {
     request: "Request access",
     requested: "Request sent",
     pending: "Your request is awaiting review.",
+    pendingDetail:
+      "Your request is awaiting review. This collection stays locked until it is approved.",
     accessApproved: "Your access is active",
     accessIncludes: "Your collection includes",
     includes1: "Five practice sets — individual sections and full tests",
@@ -378,6 +380,8 @@ export const strings = {
     request: "Эрх хүсэх",
     requested: "Хүсэлт илгээгдсэн",
     pending: "Хүсэлтийг тань шалгаж байна.",
+    pendingDetail:
+      "Хүсэлтийг тань шалгаж байна. Зөвшөөрөх хүртэл энэ дасгалын сан түгжээтэй хэвээр байна.",
     accessApproved: "Чиний эрх нээгдсэн",
     accessIncludes: "Багцад багтах зүйлс",
     includes1: "Таван дасгалын багц — тусдаа хэсэг ба бүтэн сорил",

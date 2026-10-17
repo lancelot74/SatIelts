@@ -67,7 +67,19 @@ NODE_ENV=production npm start
 
 Set `APP_ORIGIN` to your real HTTPS origin, configure the matching Google callback and a strong `SESSION_SECRET`, and run behind an HTTPS reverse proxy. Set `TRUST_PROXY=1` only when a trusted proxy handles the connection. The server serves **only `dist`**, not the project directory. Vite also denies access to source PDFs, question keys, server code, tests, scripts and database files during development.
 
-Persist the directory containing `DATABASE_PATH` (default `.data/studyroom.sqlite`) between restarts. Use SQLite's online backup mechanism or stop the process before copying the database and its WAL files. Sessions, accounts, access grants, requests and test results are stored there. Use a single server instance for this SQLite setup. HTTPS and production deployment have not been configured by this task.
+With no `DATABASE_URL`, sessions, accounts, access grants, requests and test results stay in SQLite at `DATABASE_PATH` (default `.data/studyroom.sqlite`). Persist that directory between restarts, and keep this SQLite setup on one server process. Use SQLite's online backup, or stop the process before copying the database and its WAL files.
+
+## Supabase and Vercel
+
+The local SQLite file cannot be the shared database on Vercel. Serverless instances do not share a disk, and the project directory is read-only, so a `.data` file would be empty or rejected on the next instance. Set `DATABASE_URL` and the API opens Supabase Postgres instead. `GET /api/health` reports `"database": "postgres"` when that connection is open.
+
+1. In Supabase, create a project. Click **Connect**, choose **Transaction pooler**, and copy the URI. It uses port **6543** and a username like `postgres.[project-ref]`. Replace `[YOUR-PASSWORD]` and percent-encode any `&`, `#`, `?`, or space in the password.
+2. In Vercel, import this project and set the Node.js version to **24**. Add environment variables: `DATABASE_URL` (the pooler URI), `SESSION_SECRET` (at least 32 random characters), `APP_ORIGIN` (`https://your-domain`), `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI` (`https://your-domain/api/auth/google/callback`), and `ADMIN_EMAILS`. Do not add a `VITE_` copy of the database URL. `TRUST_PROXY` is enabled when Vercel sets `VERCEL=1`.
+3. Register that exact Google callback on the OAuth client. `APP_ORIGIN` must match the site origin with no trailing slash, or login and answer saves are rejected.
+4. Deploy. On startup the API runs `server/schema.postgres.sql`: it creates the tables if they are missing, enables row-level security, and revokes `anon` and `authenticated`. The Express server connects as the database owner, which can still read and write. The Supabase Data API cannot. Do not put the service-role key or the database password in the browser.
+5. Open `/api/health`. `"database": "postgres"` means the connection is open. Sign in once and confirm the user appears in the Supabase table editor under `users`.
+
+The pool uses one connection per warm instance and does not use prepared statements, which transaction mode cannot keep. Leave the local `npm run dev` path unchanged by keeping `DATABASE_URL` empty; samples and guides still use SQLite.
 
 ## Verify
 

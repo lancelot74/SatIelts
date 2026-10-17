@@ -812,7 +812,7 @@ function Locked({ exam, number = "reading-1" }) {
               <Clock3 size={19} />
               <div>
                 <strong>{t.requested}</strong>
-                <p>{t.pending}</p>
+                <p>{t.pendingDetail}</p>
               </div>
             </div>
           ) : session.user ? (

@@ -22,6 +22,15 @@ import {
   testSummary,
 } from "./tests.mjs";
 const random = () => randomBytes(32).toString("base64url");
+const asNumber = (value) => (value == null ? value : Number(value));
+const asRun = (row) => {
+  if (!row) return row;
+  row.started_at = asNumber(row.started_at);
+  row.deadline = asNumber(row.deadline);
+  row.finished_at = asNumber(row.finished_at);
+  if (row.user_id != null) row.user_id = asNumber(row.user_id);
+  return row;
+};
 const same = (a, b) =>
   typeof a === "string" &&
   typeof b === "string" &&
@@ -84,12 +93,13 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
       },
     }),
   );
-  app.use("/api", (req, res, next) => {
+  app.use("/api", async (req, res, next) => {
+    try {
     res.set("Cache-Control", "private, no-store");
     req.user = req.session.userId
-      ? db
-          .prepare("SELECT id,email,name FROM users WHERE id=?")
-          .get(req.session.userId)
+      ? await db.get("SELECT id,email,name FROM users WHERE id=?", [
+          req.session.userId,
+        ])
       : null;
     req.isAdmin = !!req.user && adminEmails.has(req.user.email.toLowerCase());
     if (!req.session.csrf) req.session.csrf = random();
@@ -101,6 +111,9 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
         return res.status(403).json({ error: "csrf" });
     }
     next();
+    } catch (error) {
+      next(error);
+    }
   });
   const login = (req, res, next) =>
     req.user ? next() : res.status(401).json({ error: "login_required" });
@@ -108,15 +121,17 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
     req.isAdmin
       ? next()
       : res.status(req.user ? 403 : 401).json({ error: "admin_required" });
-  const hasAccess = (req, exam) =>
+  const hasAccess = async (req, exam) =>
     req.isAdmin ||
     Boolean(
       req.user &&
-      db
-        .prepare("SELECT 1 FROM grants WHERE user_id=? AND exam=?")
-        .get(req.user.id, exam),
+      (await db.get(
+        "SELECT 1 AS ok FROM grants WHERE user_id=? AND exam=?",
+        [req.user.id, exam],
+      )),
     );
-  const authorizeTest = (req, res, next) => {
+  const authorizeTest = async (req, res, next) => {
+    try {
     if (
       !examById(req.params.exam) ||
       !getTest(req.params.exam, req.params.number)
@@ -124,32 +139,48 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
       return res.status(404).json({ error: "not_found" });
     if (
       !isSample(getTest(req.params.exam, req.params.number)) &&
-      !hasAccess(req, req.params.exam)
+      !(await hasAccess(req, req.params.exam))
     )
       return res
         .status(req.user ? 403 : 401)
         .json({ error: req.user ? "access_required" : "login_required" });
     next();
+    } catch (error) {
+      next(error);
+    }
   };
-  app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
-  app.get("/api/session", (req, res) =>
+  app.get("/api/health", async (_req, res, next) => {
+    try {
+      await db.get("SELECT 1 AS ok");
+      res.json({ status: "ok", database: db.dialect });
+    } catch (error) {
+      next(error);
+    }
+  });
+  app.get("/api/session", async (req, res, next) => {
+    try {
     res.json({
       user: req.user ? { ...req.user, isAdmin: req.isAdmin } : null,
       csrf: req.session.csrf,
       authAvailable,
       grants: req.user
-        ? db
-            .prepare("SELECT exam FROM grants WHERE user_id=?")
-            .all(req.user.id)
-            .map((x) => x.exam)
+        ? (
+            await db.all("SELECT exam FROM grants WHERE user_id=?", [
+              req.user.id,
+            ])
+          ).map((x) => x.exam)
         : [],
       requests: req.user
-        ? db
-            .prepare("SELECT exam,status FROM access_requests WHERE user_id=?")
-            .all(req.user.id)
+        ? await db.all(
+            "SELECT exam,status FROM access_requests WHERE user_id=?",
+            [req.user.id],
+          )
         : [],
-    }),
-  );
+    });
+    } catch (error) {
+      next(error);
+    }
+  });
   app.get("/api/catalog", (_req, res) =>
     res.json(
       exams.map(({ guide, ...e }) => ({
@@ -239,16 +270,17 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
         !same(profile.nonce, pending.nonce)
       )
         throw new Error("Invalid identity");
-      db.prepare(
+      await db.run(
         "INSERT INTO users (google_sub,email,name) VALUES (?,?,?) ON CONFLICT(google_sub) DO UPDATE SET email=excluded.email,name=excluded.name",
-      ).run(
-        profile.sub,
-        profile.email.toLowerCase(),
-        String(profile.name || profile.email).slice(0, 120),
+        [
+          profile.sub,
+          profile.email.toLowerCase(),
+          String(profile.name || profile.email).slice(0, 120),
+        ],
       );
-      const user = db
-        .prepare("SELECT id FROM users WHERE google_sub=?")
-        .get(profile.sub);
+      const user = await db.get("SELECT id FROM users WHERE google_sub=?", [
+        profile.sub,
+      ]);
       req.session.regenerate((err) => {
         if (err) return res.redirect("/login?error=sign_in_failed");
         req.session.userId = user.id;
@@ -283,40 +315,50 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
     "/api/tests/:exam/:number/start",
     rateLimit({ windowMs: 60000, limit: 20 }),
     authorizeTest,
-    (req, res) => {
+    async (req, res, next) => {
+      try {
       const test = getTest(req.params.exam, req.params.number);
       const ids = req.session.runs ?? [];
-      const previous = req.user
-        ? db
-            .prepare(
-              "SELECT * FROM runs WHERE user_id=? AND exam=? AND test_number=? AND result IS NULL ORDER BY started_at DESC LIMIT 1",
-            )
-            .get(req.user.id, test.exam, String(test.number))
-        : ids
-            .map((id) => db.prepare("SELECT * FROM runs WHERE id=?").get(id))
-            .find(
-              (r) =>
-                r &&
-                r.exam === test.exam &&
-                r.test_number === String(test.number) &&
-                !r.result,
-            );
+      let previous = null;
+      if (req.user)
+        previous = asRun(
+          await db.get(
+            "SELECT * FROM runs WHERE user_id=? AND exam=? AND test_number=? AND result IS NULL ORDER BY started_at DESC LIMIT 1",
+            [req.user.id, test.exam, String(test.number)],
+          ),
+        );
+      else
+        for (const id of ids) {
+          const row = asRun(
+            await db.get("SELECT * FROM runs WHERE id=?", [id]),
+          );
+          if (
+            row &&
+            row.exam === test.exam &&
+            row.test_number === String(test.number) &&
+            !row.result
+          ) {
+            previous = row;
+            break;
+          }
+        }
       let run = previous;
       if (!run) {
         const id = randomUUID(),
           start = now(),
           deadline = start + test.minutes * 60000;
-        db.prepare(
+        await db.run(
           "INSERT INTO runs (id,user_id,exam,test_number,started_at,deadline) VALUES (?,?,?,?,?,?)",
-        ).run(
-          id,
-          req.user?.id ?? null,
-          test.exam,
-          String(test.number),
-          start,
-          deadline,
+          [
+            id,
+            req.user?.id ?? null,
+            test.exam,
+            String(test.number),
+            start,
+            deadline,
+          ],
         );
-        run = db.prepare("SELECT * FROM runs WHERE id=?").get(id);
+        run = asRun(await db.get("SELECT * FROM runs WHERE id=?", [id]));
       }
       req.session.runs = [...new Set([...ids, run.id])].slice(-25);
       res.json({
@@ -326,10 +368,16 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
         answers: JSON.parse(run.answers),
         test: publicTest(test),
       });
+      } catch (error) {
+        next(error);
+      }
     },
   );
-  const ownedRun = (req, res, next) => {
-    const run = db.prepare("SELECT * FROM runs WHERE id=?").get(req.params.id);
+  const ownedRun = async (req, res, next) => {
+    try {
+    const run = asRun(
+      await db.get("SELECT * FROM runs WHERE id=?", [req.params.id]),
+    );
     if (
       !run ||
       (!(req.user && run.user_id === req.user.id) &&
@@ -338,11 +386,14 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
       return res.status(404).json({ error: "not_found" });
     if (
       !isSample(getTest(run.exam, run.test_number)) &&
-      !hasAccess(req, run.exam)
+      !(await hasAccess(req, run.exam))
     )
       return res.status(403).json({ error: "access_required" });
     req.run = run;
     next();
+    } catch (error) {
+      next(error);
+    }
   };
   const validAnswers = (test, value) =>
     value &&
@@ -359,20 +410,25 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
               : 500)) ||
           (Number.isInteger(v) && v >= 0 && v <= 20)),
     );
-  app.put("/api/runs/:id/answers", ownedRun, (req, res) => {
+  app.put("/api/runs/:id/answers", ownedRun, async (req, res, next) => {
+    try {
     const run = req.run,
       test = getTest(run.exam, run.test_number);
     if (run.result || now() >= run.deadline)
       return res.status(409).json({ error: "time_up" });
     if (!validAnswers(test, req.body.answers))
       return res.status(400).json({ error: "invalid_answers" });
-    db.prepare("UPDATE runs SET answers=? WHERE id=?").run(
+    await db.run("UPDATE runs SET answers=? WHERE id=?", [
       JSON.stringify(req.body.answers),
       run.id,
-    );
+    ]);
     res.json({ saved: true, serverNow: now() });
+    } catch (error) {
+      next(error);
+    }
   });
-  app.post("/api/runs/:id/submit", ownedRun, (req, res) => {
+  app.post("/api/runs/:id/submit", ownedRun, async (req, res, next) => {
+    try {
     const run = req.run,
       test = getTest(run.exam, run.test_number);
     if (run.result) return res.json(JSON.parse(run.result));
@@ -396,25 +452,34 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
         (Math.min(now(), run.deadline) - run.started_at) / 1000,
       ),
     };
-    db.prepare(
+    await db.run(
       "UPDATE runs SET result=?,answers=?,finished_at=? WHERE id=?",
-    ).run(JSON.stringify(result), JSON.stringify(answers), now(), run.id);
+      [JSON.stringify(result), JSON.stringify(answers), now(), run.id],
+    );
     res.json(result);
+    } catch (error) {
+      next(error);
+    }
   });
-  app.get("/api/account", login, (req, res) =>
+  app.get("/api/account", login, async (req, res, next) => {
+    try {
     res.json({
-      history: db
-        .prepare(
+      history: (
+        await db.all(
           "SELECT id,exam,test_number,finished_at,result FROM runs WHERE user_id=? AND result IS NOT NULL ORDER BY finished_at DESC LIMIT 30",
+          [req.user.id],
         )
-        .all(req.user.id)
-        .map(({ result, ...r }) => ({
-          ...r,
-          score: JSON.parse(result).score,
-          total: JSON.parse(result).total,
-        })),
-    }),
-  );
+      ).map(({ result, ...r }) => ({
+        ...r,
+        finished_at: Number(r.finished_at),
+        score: JSON.parse(result).score,
+        total: JSON.parse(result).total,
+      })),
+    });
+    } catch (error) {
+      next(error);
+    }
+  });
   app.get("/api/runs/:id/result", ownedRun, (req, res) =>
     req.run.result
       ? res.json(JSON.parse(req.run.result))
@@ -424,63 +489,70 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
     "/api/access-requests",
     login,
     rateLimit({ windowMs: 60000, limit: 10 }),
-    (req, res) => {
+    async (req, res, next) => {
+      try {
       const exam = req.body.exam;
       if (!examById(exam))
         return res.status(400).json({ error: "invalid_exam" });
-      if (hasAccess(req, exam)) return res.json({ status: "approved" });
-      db.prepare(
+      if (await hasAccess(req, exam)) return res.json({ status: "approved" });
+      await db.run(
         "INSERT INTO access_requests (user_id,exam) VALUES (?,?) ON CONFLICT(user_id,exam) DO UPDATE SET status='pending',created_at=CURRENT_TIMESTAMP",
-      ).run(req.user.id, exam);
+        [req.user.id, exam],
+      );
       res.json({ status: "pending" });
+      } catch (error) {
+        next(error);
+      }
     },
   );
-  app.get("/api/admin", admin, (_req, res) =>
+  app.get("/api/admin", admin, async (_req, res, next) => {
+    try {
     res.json({
-      requests: db
-        .prepare(
-          "SELECT r.*,u.email,u.name FROM access_requests r JOIN users u ON r.user_id=u.id ORDER BY r.created_at DESC",
-        )
-        .all(),
-      grants: db
-        .prepare(
-          "SELECT g.*,u.email,u.name FROM grants g JOIN users u ON g.user_id=u.id ORDER BY g.created_at DESC",
-        )
-        .all(),
-    }),
-  );
-  app.post("/api/admin/access", admin, (req, res) => {
+      requests: await db.all(
+        "SELECT r.*,u.email,u.name FROM access_requests r JOIN users u ON r.user_id=u.id ORDER BY r.created_at DESC",
+      ),
+      grants: await db.all(
+        "SELECT g.*,u.email,u.name FROM grants g JOIN users u ON g.user_id=u.id ORDER BY g.created_at DESC",
+      ),
+    });
+    } catch (error) {
+      next(error);
+    }
+  });
+  app.post("/api/admin/access", admin, async (req, res, next) => {
+    try {
     const { userId, exam, action } = req.body;
     if (
       !Number.isInteger(userId) ||
       !examById(exam) ||
       !["approve", "revoke", "reject"].includes(action) ||
-      !db.prepare("SELECT id FROM users WHERE id=?").get(userId)
+      !(await db.get("SELECT id FROM users WHERE id=?", [userId]))
     )
       return res.status(400).json({ error: "invalid_request" });
-    db.exec("BEGIN");
-    try {
+    await db.transaction(async (tx) => {
       if (action === "approve")
-        db.prepare(
-          "INSERT OR REPLACE INTO grants (user_id,exam,granted_by) VALUES (?,?,?)",
-        ).run(userId, exam, req.user.id);
+        await tx.run(
+          "INSERT INTO grants (user_id,exam,granted_by) VALUES (?,?,?) ON CONFLICT(user_id,exam) DO UPDATE SET granted_by=excluded.granted_by",
+          [userId, exam, req.user.id],
+        );
       else if (action === "revoke")
-        db.prepare("DELETE FROM grants WHERE user_id=? AND exam=?").run(
+        await tx.run("DELETE FROM grants WHERE user_id=? AND exam=?", [
           userId,
           exam,
-        );
-      db.prepare(
+        ]);
+      await tx.run(
         "UPDATE access_requests SET status=? WHERE user_id=? AND exam=?",
-      ).run(action === "approve" ? "approved" : "rejected", userId, exam);
-      db.prepare(
+        [action === "approve" ? "approved" : "rejected", userId, exam],
+      );
+      await tx.run(
         "INSERT INTO audit (actor_id,user_id,exam,action) VALUES (?,?,?,?)",
-      ).run(req.user.id, userId, exam, action);
-      db.exec("COMMIT");
-    } catch (e) {
-      db.exec("ROLLBACK");
-      throw e;
-    }
+        [req.user.id, userId, exam, action],
+      );
+    });
     res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
   });
   app.get("/api/guides/:exam", (req, res) => {
     if (!examById(req.params.exam))
