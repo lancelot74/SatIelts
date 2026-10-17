@@ -16,6 +16,7 @@ import {
   useParams,
   useSearchParams,
 } from "react-router-dom";
+import { BrandMark } from "./Brand.jsx";
 import {
   ArrowRight,
   ArrowUpRight,
@@ -209,11 +210,12 @@ function AsteriskMark() {
 }
 function Logo() {
   return (
-    <Link className="logo" to="/" aria-label="Studyroom home">
-      <span className="logo-icon">
-        <BookOpen size={21} strokeWidth={1.7} />
+    <Link className="logo" to="/" aria-label="Eight Steppe Academy home">
+      <BrandMark className="logo-mark" />
+      <span className="logo-words">
+        <span className="logo-name">Eight Steppe</span>
+        <span className="logo-academy">Academy</span>
       </span>
-      studyroom<span className="logo-dot">.</span>
     </Link>
   );
 }
@@ -297,7 +299,7 @@ function Footer() {
         </div>
       </div>
       <div className="footer-bottom">
-        <span>© 2026 Studyroom. {t.allRights}</span>
+        <span>© 2026 Eight Steppe Academy. {t.allRights}</span>
         <span>{t.independent}</span>
       </div>
     </footer>

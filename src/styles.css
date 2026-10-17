@@ -257,24 +257,33 @@ ul {
 .logo {
   display: inline-flex;
   align-items: center;
-  font-size: 24px;
-  font-weight: 800;
-  letter-spacing: -1.3px;
+  gap: 10px;
   white-space: nowrap;
+  font-family: "Times New Roman", Times, serif;
+  color: #161616;
 }
-.logo-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--ink);
-  color: var(--paper);
+.logo-mark {
   width: 32px;
-  height: 35px;
-  border-radius: 7px;
-  margin-right: 9px;
+  height: 42px;
+  display: block;
+  flex: none;
 }
-.logo-dot {
-  color: #809274;
+.logo-words {
+  display: flex;
+  flex-direction: column;
+  line-height: 1;
+}
+.logo-name {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.1px;
+}
+.logo-academy {
+  margin-top: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
 }
 .main-nav {
   display: flex;
@@ -915,15 +924,12 @@ ul {
   align-items: center;
   justify-content: space-between;
 }
-.footer .logo {
-  font-size: 21px;
+.footer .logo-mark {
+  width: 28px;
+  height: 36px;
 }
-.footer .logo-icon {
-  width: 27px;
-  height: 29px;
-}
-.footer .logo-icon svg {
-  width: 18px;
+.footer .logo-name {
+  font-size: 18px;
 }
 .footer-top p {
   font-size: 10px;
@@ -2692,12 +2698,15 @@ ul {
     padding: 0 24px;
     gap: 15px;
   }
-  .logo {
-    font-size: 22px;
+  .logo-mark {
+    width: 26px;
+    height: 34px;
   }
-  .logo-icon {
-    width: 28px;
-    height: 31px;
+  .logo-name {
+    font-size: 16px;
+  }
+  .logo-academy {
+    letter-spacing: 0.16em;
   }
   .main-nav {
     gap: 17px;
@@ -3465,8 +3474,8 @@ ul {
     font-size: 8px;
     padding: 20px 0 25px;
   }
-  .footer .logo {
-    font-size: 20px;
+  .footer .logo-name {
+    font-size: 16px;
   }
   .footer-top p {
     font-size: 9px;
