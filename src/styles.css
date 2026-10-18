@@ -240,9 +240,10 @@ ul {
 .header {
   height: 84px;
   border-bottom: 1px solid var(--line);
-  background: #f8f7f3f7;
+  background: #f7f6f1;
   position: relative;
   z-index: 20;
+  box-shadow: 0 10px 30px -28px #29322c;
 }
 .header-inner {
   max-width: 1400px;
@@ -335,9 +336,15 @@ ul {
   font-weight: 750;
   color: #898d85;
 }
+.language-toggle {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px;
+}
 .language-toggle button[aria-pressed="true"] {
-  background: #e6e9df;
-  color: var(--ink);
+  background: #29322c;
+  color: #fffefa;
 }
 .avatar {
   width: 19px;
@@ -377,7 +384,8 @@ ul {
 }
 .hero h1 em {
   font-weight: 400;
-  color: #687b5b;
+  font-style: italic;
+  color: #3f5344;
 }
 .hero-description {
   max-width: 430px;
@@ -591,8 +599,9 @@ ul {
   overflow: hidden;
 }
 .exam-card:hover {
-  transform: translateY(-5px);
+  transform: translateY(-6px);
   border-color: var(--accent);
+  box-shadow: 0 18px 40px -30px #29322c;
 }
 .exam-card-top {
   display: flex;
@@ -1610,12 +1619,19 @@ ul {
   position: sticky;
   top: 0;
   z-index: 18;
-  background: var(--paper);
+  background: #fffefae6;
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 20px;
-  padding: 17px 42px;
+  padding: 14px 42px;
+}
+.toolbar-help {
+  min-height: 40px;
+  padding: 8px 14px;
+  font-size: 12px;
 }
 .player-toolbar > div:first-child {
   display: flex;
@@ -1754,8 +1770,66 @@ ul {
   padding: 8px 11px;
 }
 .help-button.on {
-  background: #e5eddb;
-  border-color: #b8c7a8;
+  background: #29322c;
+  border-color: #29322c;
+  color: #fffefa;
+}
+.help-sheet {
+  margin-top: 22px;
+  padding: 18px 18px 14px;
+  border-radius: 10px;
+  background: #f4f1e8;
+  border: 1px solid #e4dcc8;
+}
+.help-kicker {
+  margin: 0 0 10px;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #7a6a45;
+}
+.help-prompt,
+.help-passage {
+  margin: 0 0 12px;
+  font-size: 16px;
+  line-height: 1.7;
+  color: #3d382c;
+}
+.help-options {
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.help-options li {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-size: 15px;
+  line-height: 1.55;
+}
+.help-options span {
+  flex: none;
+  width: 22px;
+  font-weight: 750;
+  color: #7a6a45;
+}
+.help-hint,
+.help-sheet > small,
+.help-empty {
+  display: block;
+  margin-top: 12px;
+  color: #7d7564;
+  font-size: 13px;
+}
+.review-mn {
+  display: block;
+  margin-top: 4px;
+  color: #6d624c;
+  font-size: 12px;
+  font-weight: 500;
 }
 .translation-note {
   padding: 16px;
@@ -3754,6 +3828,10 @@ ul {
   }
   .player-toolbar .icon-button {
     padding: 5px;
+  }
+  .toolbar-help {
+    order: 3;
+    flex: 1 1 100%;
   }
   .player-toolbar > .button {
     font-size: 9px;

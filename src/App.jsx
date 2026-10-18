@@ -33,7 +33,6 @@ import {
   Languages,
   LockKeyhole,
   Menu,
-  Minus,
   Plus,
   RotateCcw,
   ShieldCheck,
@@ -45,6 +44,15 @@ import {
 } from "lucide-react";
 import { strings } from "./i18n.js";
 import { PracticeAudio, VoiceResponse } from "./PracticeMedia.jsx";
+const STOCK_MN = "Энэ шинэ сорилын асуулт англи хэл дээр.";
+function mnCopy(value) {
+  const text = typeof value === "string" ? value : value?.mn;
+  if (!text || text === STOCK_MN) return "";
+  if (typeof value === "object" && value.en && text.trim() === value.en.trim())
+    return "";
+  if (!/[А-Яа-яӨөҮү]/.test(text)) return "";
+  return text;
+}
 const sectionText = (section, t) =>
   ({
     Reading: t.reading,
@@ -1174,6 +1182,49 @@ function Modal({ open, onClose, title, children }) {
     </dialog>
   );
 }
+function HelpSheet({ question, table, t }) {
+  const prompt = mnCopy(question.prompt);
+  const options = (question.options || [])
+    .map((option) => mnCopy(option))
+    .filter(Boolean);
+  const hint = mnCopy(question.hint);
+  if (!prompt && !options.length && !hint && !table) {
+    return <p className="help-empty">{t.helpMissing}</p>;
+  }
+  return (
+    <aside className="help-sheet" lang="mn">
+      <p className="help-kicker">{t.helpBelow}</p>
+      {prompt && <p className="help-prompt">{prompt}</p>}
+      {table && (
+        <div className="task-table">
+          <table>
+            <tbody>
+              {table.map((row, i) => (
+                <tr key={i}>
+                  {row.map((cell, j) => (
+                    <td key={j}>{cell}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {options.length > 0 && (
+        <ol className="help-options">
+          {options.map((option, i) => (
+            <li key={i}>
+              <span>{"ABCDEFGHIJKLMNOPQRSTUVWXYZ"[i]}</span>
+              {option}
+            </li>
+          ))}
+        </ol>
+      )}
+      {hint && <p className="help-hint">{hint}</p>}
+      <small>{t.helpNote}</small>
+    </aside>
+  );
+}
 function Player({ initial, exam, onFinish }) {
   const { t, api, tr } = useApp();
   const navigate = useNavigate();
@@ -1196,8 +1247,7 @@ function Player({ initial, exam, onFinish }) {
     offset = useRef(serverNow - Date.now()),
     submitRef = useRef(null);
   const question = test.questions[index];
-  const questionTable =
-    help && question.tableMn ? question.tableMn : question.table;
+  const questionTable = question.table;
   const count = test.questions.length;
   const answered = Object.values(answers).filter(
     (v) => v !== "" && v !== null,
@@ -1328,6 +1378,14 @@ function Player({ initial, exam, onFinish }) {
             <p>{sectionText(question.section, t)}</p>
           </div>
         </div>
+        <button
+          className={`help-button toolbar-help ${help ? "on" : ""}`}
+          aria-expanded={help}
+          onClick={() => setHelp((open) => !open)}
+        >
+          <Languages size={16} />
+          {help ? t.hideHelp : t.showHelp}
+        </button>
         <div
           className={`timer ${seconds < 60 ? "urgent" : ""}`}
           role="timer"
@@ -1389,10 +1447,11 @@ function Player({ initial, exam, onFinish }) {
               />
             )}
             <Passage text={question.passage} />
-            {help && question.passageMn && (
-              <p className="translation-note source-transcript" lang="mn">
-                {question.passageMn}
-              </p>
+            {help && mnCopy(question.passageMn) && (
+              <div className="help-sheet" lang="mn">
+                <p className="help-kicker">{t.helpBelow}</p>
+                <p className="help-passage">{mnCopy(question.passageMn)}</p>
+              </div>
             )}
           </section>
         )}
@@ -1478,21 +1537,6 @@ function Player({ initial, exam, onFinish }) {
             />
           )}
 
-          <button
-            className={`help-button ${help ? "on" : ""}`}
-            aria-expanded={help}
-            onClick={() => setHelp(!help)}
-          >
-            <Languages size={16} />
-            {help ? t.hideHelp : t.showHelp}
-            {help ? <Minus size={14} /> : <Plus size={14} />}
-          </button>
-          {help && (
-            <div className="translation-note" lang="mn">
-              <strong>{question.prompt.mn}</strong>
-              <small>{t.helpNote}</small>
-            </div>
-          )}
           {question.options ? (
             <fieldset className="answer-options">
               <legend className="sr-only">{t.yourAnswer}</legend>
@@ -1514,7 +1558,6 @@ function Player({ initial, exam, onFinish }) {
                   </span>
                   <span className="option-copy">
                     <span lang="en">{option.en}</span>
-                    {help && <small lang="mn">{option.mn}</small>}
                   </span>
                   <span className="option-check">
                     {String(answers[question.id]) === String(i) && (
@@ -1567,8 +1610,10 @@ function Player({ initial, exam, onFinish }) {
                 placeholder={t.answerPlaceholder}
                 disabled={busy || seconds === 0}
               />
-              {help && question.hint && <small>{question.hint.mn}</small>}
             </label>
+          )}
+          {help && (
+            <HelpSheet question={question} table={question.tableMn} t={t} />
           )}
           <div className="question-controls">
             <button
@@ -1825,7 +1870,14 @@ function Results({ result, exam, onRetake }) {
               <span className="review-index">
                 {String(i + 1).padStart(2, "0")}
               </span>
-              <span>{showMn ? q.prompt.mn : q.prompt.en}</span>
+              <span>
+                {q.prompt.en}
+                {showMn && mnCopy(q.prompt) && (
+                  <small className="review-mn" lang="mn">
+                    {mnCopy(q.prompt)}
+                  </small>
+                )}
+              </span>
               <Plus size={17} />
             </summary>
             <div className="review-body">
