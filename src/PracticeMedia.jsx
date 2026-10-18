@@ -23,11 +23,14 @@ async function recordingStore(key, blob) {
   }
 }
 
-export function PracticeAudio({ text, t, disabled }) {
+export function PracticeAudio({ text, src, t, disabled }) {
+  const audioRef = useRef(null);
   const [playing, setPlaying] = useState(false);
   const [failed, setFailed] = useState(false);
   const supported =
-    "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
+    !src &&
+    "speechSynthesis" in window &&
+    "SpeechSynthesisUtterance" in window;
   useEffect(
     () => () => {
       if (supported) window.speechSynthesis.cancel();
@@ -57,6 +60,23 @@ export function PracticeAudio({ text, t, disabled }) {
     setFailed(false);
     setPlaying(true);
     window.speechSynthesis.speak(speech);
+  }
+  if (src) {
+    return (
+      <div className="practice-audio">
+        <audio
+          ref={audioRef}
+          src={src}
+          controls
+          preload="none"
+          onPlay={(event) => {
+            document.querySelectorAll("audio").forEach((clip) => {
+              if (clip !== event.currentTarget) clip.pause();
+            });
+          }}
+        />
+      </div>
+    );
   }
   return (
     <div className="practice-audio">

@@ -55,6 +55,27 @@ const sectionText = (section, t) =>
     Speaking: t.speaking,
   })[section] || section;
 function testLabel(number, t, examId) {
+  const length = String(number).match(
+    /^length-(?:(rw1|rw2|math1|math2|listening|reading|writing|speaking)-)?(\d+)$/,
+  );
+  if (length) {
+    const section = {
+      rw1: t.readingWriting,
+      rw2: t.readingWriting,
+      math1: t.math,
+      math2: t.math,
+      listening: t.listening,
+      reading: t.reading,
+      writing: t.writing,
+      speaking: t.speaking,
+    }[length[1]];
+    const moduleNumber = length[1]?.endsWith("2")
+      ? " 2"
+      : length[1]?.endsWith("1")
+        ? " 1"
+        : "";
+    return `${section ? `${section}${moduleNumber} · ` : ""}${t.fullLength} ${length[2]}`;
+  }
   const match = String(number).match(
     /^(reading|math|listening|writing|speaking|full)-(sample|[1-5])$/,
   );
@@ -554,6 +575,9 @@ function ExamPage() {
   const exam = catalog.find((e) => e.id === id);
   if (!exam) return <NotFound />;
   const unlocked = session.user?.isAdmin || session.grants.includes(id);
+  const [bookId, setBookId] = useState(exam.books?.[0]?.id);
+  const bookMode =
+    exam.books?.find((mode) => mode.id === bookId) || exam.books?.[0];
   const mode =
     exam.modes.find((m) => m.id === (params.get("section") || "reading")) ||
     exam.modes[0];
@@ -743,6 +767,59 @@ function ExamPage() {
             </aside>
           </div>
         </section>
+        {bookMode && (
+          <section className="library container full-length-library">
+            <div className="section-heading">
+              <div>
+                <h2>{t.fullLength}</h2>
+                <p>{t.fullLengthText}</p>
+              </div>
+            </div>
+            <div className="practice-modes" role="group" aria-label={t.fullLength}>
+              {exam.books.map((mode) => (
+                <button
+                  key={mode.id}
+                  aria-pressed={bookMode.id === mode.id}
+                  className={`practice-mode ${bookMode.id === mode.id ? "selected" : ""}`}
+                  onClick={() => setBookId(mode.id)}
+                >
+                  <span>{tr(mode.label)}</span>
+                </button>
+              ))}
+            </div>
+            <div className="test-list">
+              {bookMode.tests.map((test) => (
+                <Link
+                  className="test-row"
+                  to={`/${id}/tests/${test.number}`}
+                  key={test.number}
+                >
+                  <span className="test-number">
+                    {String(test.set).padStart(2, "0")}
+                  </span>
+                  <div className="test-row-info">
+                    <h3>
+                      {t.fullLength} {String(test.set).padStart(2, "0")}
+                    </h3>
+                    <span className="test-meta">
+                      {test.count} {t.tasks}
+                      <span>·</span>
+                      {test.minutes} {t.minutes}
+                    </span>
+                  </div>
+                  <span className={`row-lock ${unlocked ? "unlocked" : ""}`}>
+                    {unlocked ? (
+                      <ArrowUpRight size={19} />
+                    ) : (
+                      <LockKeyhole size={17} />
+                    )}
+                    <span>{unlocked ? t.open : t.member}</span>
+                  </span>
+                </Link>
+              ))}
+            </div>
+          </section>
+        )}
       </main>
       <Footer />
     </>
@@ -936,6 +1013,9 @@ function TestPage() {
         (m) =>
           m.sample.number === number ||
           m.tests.some((test) => test.number === number),
+      ) ||
+      exam.books?.some((mode) =>
+        mode.tests.some((test) => test.number === number),
       ));
   if (!known) return <NotFound />;
   if (
@@ -1302,6 +1382,7 @@ function Player({ initial, exam, onFinish }) {
             </div>
             {question.section === "Listening" && (
               <PracticeAudio
+                src={question.audio}
                 text={question.passage}
                 t={t}
                 disabled={busy || seconds === 0}
@@ -1369,16 +1450,18 @@ function Player({ initial, exam, onFinish }) {
               </table>
             </div>
           )}
-          {question.section === "Listening" && !question.passage && (
-            <PracticeAudio
-              text={question.prompt.en.replace(
-                "Choose the best response: ",
-                "",
-              )}
-              t={t}
-              disabled={busy || seconds === 0}
-            />
-          )}
+          {!question.passage &&
+            (question.audio || question.section === "Listening") && (
+              <PracticeAudio
+                src={question.audio}
+                text={question.prompt.en.replace(
+                  "Choose the best response: ",
+                  "",
+                )}
+                t={t}
+                disabled={busy || seconds === 0}
+              />
+            )}
           {question.speechText && (
             <PracticeAudio
               text={question.speechText}

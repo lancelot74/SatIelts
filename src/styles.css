@@ -1125,6 +1125,12 @@ ul {
   display: flex;
   flex-direction: column;
 }
+.full-length-library {
+  padding-bottom: 48px;
+}
+.full-length-library .test-list {
+  max-width: 820px;
+}
 .sample-card {
   display: flex;
   gap: 21px;

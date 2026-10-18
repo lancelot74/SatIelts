@@ -14,6 +14,9 @@ export const strings = {
     writing: "Writing",
     speaking: "Speaking",
     full: "Full test",
+    fullLength: "Full-length test",
+    fullLengthText:
+      "Ten complete practice tests, with the supplied recordings for listening and speaking.",
     tasks: "questions / tasks",
     transcript: "LISTENING TRANSCRIPT",
     transcriptNotice:
@@ -273,6 +276,9 @@ export const strings = {
     writing: "Бичих",
     speaking: "Ярих",
     full: "Бүтэн сорил",
+    fullLength: "Бүтэн хэмжээний сорил",
+    fullLengthText:
+      "Арван бүтэн дасгал. Сонсох, ярих хэсэгт бэлэн бичлэг дагалдана.",
     tasks: "асуулт / даалгавар",
     transcript: "СОНСОХ ХЭСГИЙН БИЧВЭР",
     transcriptNotice:

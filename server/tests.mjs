@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { samples } from "./content.mjs";
+import { fullVariants } from "./full.mjs";
 export const tests = JSON.parse(
   fs.readFileSync(new URL("../content/tests.json", import.meta.url), "utf8"),
 );
@@ -27,7 +28,11 @@ for (const [exam, indices] of Object.entries({
   };
 }
 export function getTest(exam, number) {
-  return variants[`${exam}-${number}`] ?? tests[`${exam}-${number}`];
+  return (
+    variants[`${exam}-${number}`] ??
+    tests[`${exam}-${number}`] ??
+    fullVariants[`${exam}-${number}`]
+  );
 }
 const additions = JSON.parse(
   fs.readFileSync(new URL("../content/sections.json", import.meta.url), "utf8"),

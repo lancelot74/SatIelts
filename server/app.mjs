@@ -21,6 +21,7 @@ import {
   practiceModes,
   testSummary,
 } from "./tests.mjs";
+import { fullModes, fullVariants } from "./full.mjs";
 const random = () => randomBytes(32).toString("base64url");
 const asNumber = (value) => (value == null ? value : Number(value));
 const asRun = (row) => {
@@ -204,6 +205,17 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
             sections: [...new Set(t.questions.map((q) => q.section))],
           };
         }),
+        books: fullModes(e.id).map((mode) => ({
+          id: mode.id,
+          label: mode.label,
+          tests: Array.from({ length: 10 }, (_, i) =>
+            testSummary(
+              fullVariants[
+                `${e.id}-${mode.id === "length" ? `length-${i + 1}` : `length-${mode.id}-${i + 1}`}`
+              ],
+            ),
+          ),
+        })),
       })),
     ),
   );
