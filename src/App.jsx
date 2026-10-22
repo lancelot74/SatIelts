@@ -244,7 +244,7 @@ function AsteriskMark() {
 function Logo() {
   return (
     <Link className="logo" to="/" aria-label="Eight Steppe Academy home">
-      <img className="logo-mark" src="/logo.jpg" alt="" />
+      <img className="logo-mark" src="/logo.png" alt="" />
     </Link>
   );
 }
