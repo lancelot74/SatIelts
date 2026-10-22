@@ -197,7 +197,10 @@ export function publicTest(test) {
   return {
     ...test,
     questions: test.questions.map(
-      ({ answer, accepted, explanation, ...q }) => q,
+      ({ answer, accepted, explanation, ...q }) => ({
+        ...q,
+        expectsNumber: expectsNumber({ ...q, answer, accepted }),
+      }),
     ),
   };
 }
@@ -209,6 +212,101 @@ const normalize = (v) =>
     .replace(/[−–]/g, "-")
     .replace(/\s/g, "")
     .trim();
+const NUMBER_WORDS = {
+  zero: 0,
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+  thirteen: 13,
+  fourteen: 14,
+  fifteen: 15,
+  sixteen: 16,
+  seventeen: 17,
+  eighteen: 18,
+  nineteen: 19,
+  twenty: 20,
+  thirty: 30,
+  forty: 40,
+  fifty: 50,
+  sixty: 60,
+  seventy: 70,
+  eighty: 80,
+  ninety: 90,
+  first: 1,
+  second: 2,
+  third: 3,
+  fourth: 4,
+  fifth: 5,
+  sixth: 6,
+  seventh: 7,
+  eighth: 8,
+  ninth: 9,
+  tenth: 10,
+  eleventh: 11,
+  twelfth: 12,
+  thirteenth: 13,
+  fourteenth: 14,
+  fifteenth: 15,
+  sixteenth: 16,
+  seventeenth: 17,
+  eighteenth: 18,
+  nineteenth: 19,
+  twentieth: 20,
+  thirtieth: 30,
+};
+const TENS = {
+  twenty: 20,
+  thirty: 30,
+  forty: 40,
+  fifty: 50,
+  sixty: 60,
+  seventy: 70,
+  eighty: 80,
+  ninety: 90,
+};
+export function numericValue(raw) {
+  let text = String(raw ?? "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[£$,]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^the /, "");
+  text = text.replace(/(\d+)\s*(st|nd|rd|th)$/, "$1");
+  if (/^-?\d+(\.\d+)?$/.test(text)) return String(Number(text));
+  const word = text.replace(/-/g, " ");
+  if (NUMBER_WORDS[word] != null) return String(NUMBER_WORDS[word]);
+  const parts = word.split(" ");
+  if (
+    parts.length === 2 &&
+    TENS[parts[0]] != null &&
+    NUMBER_WORDS[parts[1]] != null &&
+    NUMBER_WORDS[parts[1]] < 10
+  )
+    return String(TENS[parts[0]] + NUMBER_WORDS[parts[1]]);
+  return null;
+}
+const expectsNumber = (question) => {
+  if (
+    question.options ||
+    question.kind === "essay" ||
+    question.kind === "speaking"
+  )
+    return false;
+  const primary = Array.isArray(question.answer)
+    ? question.answer[0]
+    : question.answer;
+  return numericValue(primary) != null;
+};
 export function grade(test, answers) {
   const results = test.questions.map((q) => {
     const supplied = answers[q.id] ?? "";
@@ -216,6 +314,7 @@ export function grade(test, answers) {
       return { ...q, supplied, correct: null };
     const accepted =
       q.accepted ?? (Array.isArray(q.answer) ? q.answer : [q.answer]);
+    const suppliedNumber = numericValue(supplied);
     const correct = q.options
       ? accepted.some((a) => String(a) === String(supplied))
       : normalize(supplied) !== "" &&
@@ -225,6 +324,7 @@ export function grade(test, answers) {
               ? normalize(a).replace(/[.!?]+$/, "") ===
                 normalize(supplied).replace(/[.!?]+$/, "")
               : normalize(a) === normalize(supplied)) ||
+            (suppliedNumber != null && numericValue(a) === suppliedNumber) ||
             (Number.isFinite(Number(a)) &&
               Number.isFinite(Number(supplied)) &&
               Number(a) === Number(supplied)),
@@ -304,8 +404,17 @@ export function grade(test, answers) {
       produce: "үйлдвэрлэх",
       strongly: "хүчтэй",
     };
+    const {
+      passage,
+      passageMn,
+      audio,
+      speechText,
+      table,
+      tableMn,
+      ...review
+    } = q;
     return {
-      ...q,
+      ...review,
       supplied,
       correct,
       answerMn:

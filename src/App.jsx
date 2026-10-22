@@ -1607,9 +1607,16 @@ function Player({ initial, exam, onFinish }) {
                 maxLength={500}
                 value={answers[question.id] ?? ""}
                 onChange={(e) => answer(e.target.value)}
-                placeholder={t.answerPlaceholder}
+                placeholder={
+                  question.expectsNumber
+                    ? t.numberPlaceholder
+                    : t.answerPlaceholder
+                }
                 disabled={busy || seconds === 0}
               />
+              {question.expectsNumber && (
+                <small className="number-note">{t.numberAnswer}</small>
+              )}
             </label>
           )}
           {help && (

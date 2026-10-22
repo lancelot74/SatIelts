@@ -1774,6 +1774,12 @@ ul {
   border-color: #29322c;
   color: #fffefa;
 }
+.number-note {
+  display: block;
+  margin-top: 8px;
+  color: #7a6a45;
+  font-size: 13px;
+}
 .help-sheet {
   margin-top: 22px;
   padding: 18px 18px 14px;

@@ -134,6 +134,28 @@ test("all imported questions have bilingual hints and valid scoring; answer keys
     }
   }
 });
+test("digit and word numbers are the same answer", () => {
+  const t = getTest("ielts", "length-listening-1");
+  const graded = grade(t, {
+    "listening-1": "five",
+    "listening-3": "fourteenth",
+    "listening-4": "mill",
+  });
+  const byId = Object.fromEntries(graded.results.map((q) => [q.id, q.correct]));
+  assert.equal(byId["listening-1"], true);
+  assert.equal(byId["listening-3"], true);
+  assert.equal(byId["listening-4"], true);
+  const pub = publicTest(t);
+  assert.equal(
+    pub.questions.find((q) => q.id === "listening-1").expectsNumber,
+    true,
+  );
+  assert.equal(
+    pub.questions.find((q) => q.id === "listening-0").expectsNumber,
+    false,
+  );
+  assert.equal(pub.questions[0].answer, undefined);
+});
 test("equivalent mathematical answers are accepted without accepting blanks", () => {
   const t = getTest("sat", "3");
   assert.equal(grade(t, { 15: "45*pi", 19: "sqrt(50)" }).score, 2);

@@ -167,13 +167,18 @@ export class SqliteSessionStore extends session.Store {
     const expires = value.cookie?.expires
       ? new Date(value.cookie.expires).getTime()
       : Date.now() + 86400000;
-    this.db
-      .transaction(async (tx) => {
-        await tx.run("DELETE FROM sessions WHERE expires<=?", [Date.now()]);
-        await tx.run(sessionUpsert, [sid, JSON.stringify(value), expires]);
-      })
-      .then(() => cb())
-      .catch(cb);
+    const save = () =>
+      this.db.run(sessionUpsert, [sid, JSON.stringify(value), expires]);
+    const due = Date.now() - (this.cleanedAt || 0) > 600000;
+    const work = due
+      ? this.db
+          .run("DELETE FROM sessions WHERE expires<=?", [Date.now()])
+          .then(() => {
+            this.cleanedAt = Date.now();
+            return save();
+          })
+      : save();
+    work.then(() => cb()).catch(cb);
   }
   destroy(sid, cb = () => {}) {
     this.db
@@ -182,7 +187,13 @@ export class SqliteSessionStore extends session.Store {
       .catch(cb);
   }
   touch(sid, value, cb = () => {}) {
-    this.set(sid, value, cb);
+    const expires = value.cookie?.expires
+      ? new Date(value.cookie.expires).getTime()
+      : Date.now() + 86400000;
+    this.db
+      .run("UPDATE sessions SET expires=? WHERE sid=?", [expires, sid])
+      .then(() => cb())
+      .catch(cb);
   }
 }
 
