@@ -66,7 +66,7 @@ jobs:
           }
           await fs.mkdir('visual-preview', { recursive: true });
           await fs.cp('dist/assets', 'visual-preview/assets', { recursive: true });
-          await fs.copyFile('dist/favicon.svg', 'visual-preview/favicon.svg');
+          await fs.copyFile('dist/logo.png', 'visual-preview/logo.png');
           await fs.writeFile('visual-preview/.nojekyll', '');
           const browser = await chromium.launch();
           try {
