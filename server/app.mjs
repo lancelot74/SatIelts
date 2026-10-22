@@ -22,6 +22,12 @@ import {
   testSummary,
 } from "./tests.mjs";
 import { fullModes, fullVariants } from "./full.mjs";
+const CANONICAL_ORIGIN = "https://eightsteppe.org";
+const ALIAS_HOSTS = new Set([
+  "eightsteppe.com",
+  "www.eightsteppe.com",
+  "www.eightsteppe.org",
+]);
 const random = () => randomBytes(32).toString("base64url");
 const asNumber = (value) => (value == null ? value : Number(value));
 const asRun = (row) => {
@@ -58,6 +64,10 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
   );
   if (config.trustProxy) app.set("trust proxy", 1);
   app.disable("x-powered-by");
+  app.use((req, res, next) => {
+    if (!ALIAS_HOSTS.has(req.hostname.toLowerCase())) return next();
+    res.redirect(301, `${CANONICAL_ORIGIN}${req.originalUrl}`);
+  });
   app.use(
     helmet({
       contentSecurityPolicy: {
@@ -481,12 +491,16 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
           "SELECT id,exam,test_number,finished_at,result FROM runs WHERE user_id=? AND result IS NOT NULL ORDER BY finished_at DESC LIMIT 30",
           [req.user.id],
         )
-      ).map(({ result, ...r }) => ({
-        ...r,
-        finished_at: Number(r.finished_at),
-        score: JSON.parse(result).score,
-        total: JSON.parse(result).total,
-      })),
+      ).map(({ result, ...r }) => {
+        const parsed = JSON.parse(result);
+        return {
+          ...r,
+          finished_at: Number(r.finished_at),
+          score: parsed.score,
+          total: parsed.total,
+          band: parsed.band ?? null,
+        };
+      }),
     });
     } catch (error) {
       next(error);

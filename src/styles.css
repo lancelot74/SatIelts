@@ -1774,6 +1774,32 @@ ul {
   border-color: #29322c;
   color: #fffefa;
 }
+.question-direction {
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: #f4f1e8;
+  color: #4e4636;
+  font-size: 14px;
+  line-height: 1.55;
+}
+.row-end {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.row-score {
+  min-width: 42px;
+  text-align: right;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+}
+.band-parts {
+  margin: 8px 0 0;
+  color: #5c6754;
+  font-size: 13px;
+}
 .number-note {
   display: block;
   margin-top: 8px;

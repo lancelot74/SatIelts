@@ -147,13 +147,19 @@ test("digit and word numbers are the same answer", () => {
   assert.equal(byId["listening-4"], true);
   const pub = publicTest(t);
   assert.equal(
-    pub.questions.find((q) => q.id === "listening-1").expectsNumber,
-    true,
+    pub.questions.find((q) => q.id === "listening-1").answerForm,
+    "number",
   );
   assert.equal(
-    pub.questions.find((q) => q.id === "listening-0").expectsNumber,
-    false,
+    pub.questions.find((q) => q.id === "listening-0").answerForm,
+    "",
   );
+  const perfect = grade(
+    t,
+    Object.fromEntries(t.questions.map((q) => [q.id, q.answer])),
+  );
+  assert.equal(perfect.score, 40);
+  assert.equal(perfect.band, 9);
   assert.equal(pub.questions[0].answer, undefined);
 });
 test("equivalent mathematical answers are accepted without accepting blanks", () => {
@@ -559,6 +565,24 @@ test("long writing responses survive reload and are reviewed without fabricated 
     "writing-sample",
   );
   f.db.close();
+});
+
+test("alias domains redirect to eightsteppe.org and the canonical host does not", async () => {
+  const { app } = fixture();
+  const alias = await supertest(app)
+    .get("/practice?exam=sat")
+    .set("Host", "www.eightsteppe.com")
+    .expect(301);
+  assert.equal(
+    alias.headers.location,
+    "https://eightsteppe.org/practice?exam=sat",
+  );
+  const apex = await supertest(app)
+    .get("/guides")
+    .set("Host", "eightsteppe.com")
+    .expect(301);
+  assert.equal(apex.headers.location, "https://eightsteppe.org/guides");
+  await supertest(app).get("/api/health").set("Host", "eightsteppe.org").expect(200);
 });
 
 test("full-test grading separates objective results from open responses", () => {

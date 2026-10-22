@@ -53,6 +53,10 @@ function mnCopy(value) {
   if (!/[А-Яа-яӨөҮү]/.test(text)) return "";
   return text;
 }
+function formatBand(value) {
+  const number = Number(value);
+  return Number.isInteger(number) ? String(number) : number.toFixed(1);
+}
 const sectionText = (section, t) =>
   ({
     Reading: t.reading,
@@ -110,6 +114,7 @@ function useResource(url) {
     [error, setError] = useState(null),
     [version, setVersion] = useState(0);
   useEffect(() => {
+    if (!url) return;
     let alive = true;
     setData(null);
     setError(null);
@@ -583,6 +588,15 @@ function ExamPage() {
   const exam = catalog.find((e) => e.id === id);
   if (!exam) return <NotFound />;
   const unlocked = session.user?.isAdmin || session.grants.includes(id);
+  const account = useResource(session.user ? "/api/account" : null);
+  const latestMark = (number) => {
+    const row = account.data?.history?.find(
+      (item) => String(item.test_number) === String(number),
+    );
+    if (!row) return "";
+    if (row.band != null) return formatBand(row.band);
+    return `${row.score}/${row.total}`;
+  };
   const [bookId, setBookId] = useState(exam.books?.[0]?.id);
   const bookMode =
     exam.books?.find((mode) => mode.id === bookId) || exam.books?.[0];
@@ -731,13 +745,18 @@ function ExamPage() {
                       {test.minutes} {t.minutes}
                     </span>
                   </div>
-                  <span className={`row-lock ${unlocked ? "unlocked" : ""}`}>
-                    {unlocked ? (
-                      <ArrowUpRight size={19} />
-                    ) : (
-                      <LockKeyhole size={17} />
+                  <span className="row-end">
+                    {latestMark(test.number) && (
+                      <span className="row-score">{latestMark(test.number)}</span>
                     )}
-                    <span>{unlocked ? t.open : t.member}</span>
+                    <span className={`row-lock ${unlocked ? "unlocked" : ""}`}>
+                      {unlocked ? (
+                        <ArrowUpRight size={19} />
+                      ) : (
+                        <LockKeyhole size={17} />
+                      )}
+                      <span>{unlocked ? t.open : t.member}</span>
+                    </span>
                   </span>
                 </Link>
               ))}
@@ -815,13 +834,18 @@ function ExamPage() {
                       {test.minutes} {t.minutes}
                     </span>
                   </div>
-                  <span className={`row-lock ${unlocked ? "unlocked" : ""}`}>
-                    {unlocked ? (
-                      <ArrowUpRight size={19} />
-                    ) : (
-                      <LockKeyhole size={17} />
+                  <span className="row-end">
+                    {latestMark(test.number) && (
+                      <span className="row-score">{latestMark(test.number)}</span>
                     )}
-                    <span>{unlocked ? t.open : t.member}</span>
+                    <span className={`row-lock ${unlocked ? "unlocked" : ""}`}>
+                      {unlocked ? (
+                        <ArrowUpRight size={19} />
+                      ) : (
+                        <LockKeyhole size={17} />
+                      )}
+                      <span>{unlocked ? t.open : t.member}</span>
+                    </span>
                   </span>
                 </Link>
               ))}
@@ -1478,6 +1502,9 @@ function Player({ initial, exam, onFinish }) {
               />
             </button>
           </div>
+          {question.instruction && (
+            <p className="question-direction">{question.instruction}</p>
+          )}
           <h1
             className="question-title"
             id="question-title"
@@ -1608,14 +1635,19 @@ function Player({ initial, exam, onFinish }) {
                 value={answers[question.id] ?? ""}
                 onChange={(e) => answer(e.target.value)}
                 placeholder={
-                  question.expectsNumber
+                  question.answerForm === "number"
                     ? t.numberPlaceholder
-                    : t.answerPlaceholder
+                    : question.answerForm === "time"
+                      ? t.timePlaceholder
+                      : t.answerPlaceholder
                 }
                 disabled={busy || seconds === 0}
               />
-              {question.expectsNumber && (
+              {question.answerForm === "number" && (
                 <small className="number-note">{t.numberAnswer}</small>
+              )}
+              {question.answerForm === "time" && (
+                <small className="number-note">{t.timeAnswer}</small>
               )}
             </label>
           )}
@@ -1798,10 +1830,12 @@ function Results({ result, exam, onRetake }) {
             }}
           >
             <strong>
-              {result.total
-                ? Math.round((result.score / result.total) * 100)
-                : "✓"}
-              {result.total > 0 && <small>%</small>}
+              {result.band != null
+                ? formatBand(result.band)
+                : result.total
+                  ? Math.round((result.score / result.total) * 100)
+                  : "✓"}
+              {result.band == null && result.total > 0 && <small>%</small>}
             </strong>
           </div>
           <span>
@@ -1809,6 +1843,17 @@ function Results({ result, exam, onRetake }) {
               ? `${result.score} / ${result.total} ${t.correct}`
               : t.selfReview}
           </span>
+          {result.bandParts?.length > 0 && (
+            <p className="band-parts">
+              {result.bandParts
+                .map(
+                  (part) =>
+                    `${sectionText(part.section, t)} ${formatBand(part.band)}`,
+                )
+                .join(" · ")}
+            </p>
+          )}
+          {result.band != null && <p>{t.bandSkipped}</p>}
           <p>{result.selfReviewCount ? t.selfReviewNotice : t.practiceOnly}</p>
         </div>
       </section>

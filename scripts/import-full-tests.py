@@ -86,29 +86,77 @@ def parse_answers(key_text):
                 buf.append(line.strip())
         if current is not None:
             store_explanation(answers, current, " ".join(buf))
+        for number, answer in re.findall(
+            r"(?<!\d)(\d{1,2}):\s*([A-H]|[0-9][0-9./:%+\-−]{0,12})",
+            rest,
+        ):
+            slot = answers.setdefault(
+                int(number),
+                {"answer": "", "accepted": [], "explanation": ""},
+            )
+            if not slot["answer"]:
+                slot["answer"] = answer.replace("−", "-").replace("–", "-")
         if answers:
             sections[title] = answers
     return sections
 
 
+def short_forms(text):
+    forms = []
+    for piece in re.split(r"[;,/]|\bor\b", text):
+        piece = clean(re.sub(r"\(.*?\)", "", piece)).strip(" .")
+        if piece and len(piece) <= 40 and len(piece.split()) <= 6:
+            forms.append(piece)
+    return forms
+
+
 def store_explanation(answers, number, raw):
     item = answers.setdefault(number, {"answer": "", "accepted": [], "explanation": ""})
     word = re.search(r"Complete word:\s*([A-Za-z][A-Za-z'’-]*)", raw)
-    also = re.search(r"\(also accept:\s*(.*?)\)", raw, re.S)
+    also = re.search(r"\(also accept:\s*([^)]{0,160})", raw, re.S)
     explanation = re.split(r"\[(?:Craft|Information|Expression|Standard|Algebra|Advanced|Problem|Geometry)", raw)[0]
-    explanation = re.sub(r"\(also accept:.*?\)", "", explanation, flags=re.S)
+    explanation = re.sub(r"\(also accept:.*", "", explanation, flags=re.S)
+    if not item["answer"]:
+        first = clean(raw).split()
+        if first:
+            token = first[0].strip(".,;:'\"")
+            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9'’./:-]{0,30}", token):
+                item["answer"] = token
+    extra_accept = re.search(r"also\s+accept:\s*([^.)]+)", raw, re.I)
+    if extra_accept:
+        item["accepted"] = short_forms(item["answer"] + ", " + extra_accept.group(1))
     if word:
         item["answer"] = word.group(1)
         item["accepted"] = [word.group(1)]
-    elif also:
-        extra = re.split(r"[;,]", also.group(1))
-        item["accepted"] = [clean(x) for x in extra if clean(x)]
+    elif also and not extra_accept:
+        item["accepted"] = short_forms(also.group(1))
         if item["answer"] and item["answer"] not in item["accepted"]:
             item["accepted"].insert(0, item["answer"])
-    item["explanation"] = clean(explanation)[:900]
+    item["explanation"] = clean(explanation)[:500]
+
+
+def group_directions(text):
+    ranges = []
+    pattern = re.compile(
+        r"Questions\s+(\d+)\s*[-–—]\s*(\d+)\s*:\s*(.+?)(?=\n\s*(?:Questions\s+\d+\s*[-–—]|PART\s+\d+|\d+\.)|\Z)",
+        re.I | re.S,
+    )
+    for match in pattern.finditer(text):
+        start, end = int(match.group(1)), int(match.group(2))
+        direction = clean(match.group(3))
+        kept = re.match(
+            r"(.+?(?:for each answer\.|A, B(?:, C)? or [A-Z]\.|NO MORE THAN [^.]+|ONE WORD[^.]*\.|in the passage\.))",
+            direction,
+            re.I,
+        )
+        direction = clean(kept.group(1) if kept else direction[:180])
+        if direction:
+            ranges.append((start, end, f"Questions {start}–{end}: {direction}"))
+    return ranges
 
 
 def questions_in(text):
+    directions = group_directions(text)
     matches = []
     last = 0
     for match in re.finditer(r"(?m)^[ \t]*(\d+)\.[ \t]*", text):
@@ -137,7 +185,19 @@ def questions_in(text):
                 stop = option_matches[i + 1].start() if i + 1 < len(option_matches) else len(body)
                 options.append(clean(body[opt.end():stop]))
             prompt_body = body[:option_matches[0].start()]
-        prompt = clean(f"{stem} {prompt_body}")
+        stem_text = clean(stem)
+        own = clean(prompt_body)
+        use_stem = (
+            stem_text
+            and "____" not in stem_text
+            and "Questions" not in stem_text
+            and not stem_text.startswith("PART")
+            and len(stem_text) > 40
+        )
+        prompt = clean(f"{stem_text + ' ' if use_stem else ''}{own}")
+        prompt = re.sub(r"\(Questions\s+\d+\s*[-–—]\s*\d+\)", "", prompt)
+        prompt = re.sub(r"Questions\s+\d+\s*[-–—]\s*\d+\s*:\s*", "", prompt)
+        prompt = re.sub(r"\bPART\s+\d+\b", "", prompt)
         prompt = re.sub(r"^(?:Answer:\s*)+", "", prompt).strip()
         prompt = re.sub(r"^(?:\d+ (?:questions|items) · .*?(?:minutes|minute)\s+)+", "", prompt)
         prompt = re.sub(r"^(?:DIRECTIONS|The questions in this section|Multiple-choice questions:|Student-produced response|All questions in this section|Listen and Choose a Response|You will hear a person speak\.|Complete the Words\.).*?(?=\s[A-Z])", "", prompt, count=1)
@@ -146,9 +206,14 @@ def questions_in(text):
         prompt = prompt.strip()
         if len(prompt) < 2:
             continue
+        number = int(match.group(1))
+        instruction = next((text for a, b, text in directions if a <= number <= b), "")
+        if instruction:
+            prompt = clean(prompt.replace(instruction.split(": ", 1)[-1], ""))
         items.append({
-            "number": int(match.group(1)),
-            "prompt": prompt[:4000],
+            "number": number,
+            "prompt": prompt[:2500],
+            "instruction": instruction,
             "options": options,
             "audio": audio.group(1).strip() if audio else None,
         })
@@ -174,6 +239,8 @@ def build_question(raw, answer, section, audio=None, kind=None):
         "passage": "",
         "explanation": pair(answer.get("explanation") or "Compare your answer with the key.", answer.get("explanation") or NOTE),
     }
+    if raw.get("instruction"):
+        item["instruction"] = raw["instruction"]
     if audio:
         item["audio"] = audio
     if kind:

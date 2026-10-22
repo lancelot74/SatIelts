@@ -199,7 +199,7 @@ export function publicTest(test) {
     questions: test.questions.map(
       ({ answer, accepted, explanation, ...q }) => ({
         ...q,
-        expectsNumber: expectsNumber({ ...q, answer, accepted }),
+        answerForm: answerForm({ ...q, answer, accepted }),
       }),
     ),
   };
@@ -295,18 +295,168 @@ export function numericValue(raw) {
     return String(TENS[parts[0]] + NUMBER_WORDS[parts[1]]);
   return null;
 }
-const expectsNumber = (question) => {
+export function timeValue(raw) {
+  const spaced = String(raw ?? "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+  const compact = spaced.replace(/\s/g, "");
+  const clock = compact.match(/^(\d{1,2})[:.](\d{2})$/);
+  if (clock && Number(clock[2]) < 60)
+    return `${Number(clock[1])}:${clock[2]}`;
+  const hour = (word) => NUMBER_WORDS[word];
+  const half = spaced.match(/^half past (\w+)$/);
+  if (half && hour(half[1]) != null) return `${hour(half[1])}:30`;
+  const quarter = spaced.match(/^quarter past (\w+)$/);
+  if (quarter && hour(quarter[1]) != null) return `${hour(quarter[1])}:15`;
+  const to = spaced.match(/^quarter to (\w+)$/);
+  if (to && hour(to[1]) != null) {
+    const h = hour(to[1]);
+    return `${h === 1 ? 12 : h - 1}:45`;
+  }
+  return null;
+}
+function looseText(value) {
+  return String(value ?? "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[‘’]/g, "'")
+    .replace(/[^a-z0-9' ]+/g, " ")
+    .replace(/\b(the|a|an)\b/g, " ")
+    .replace(/\s+/g, "")
+    .trim();
+}
+function sameLoose(left, right) {
+  const a = looseText(left);
+  const b = looseText(right);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (a.length > 3 && (a + "s" === b || b + "s" === a)) return true;
+  if (a.length > 4 && (a + "es" === b || b + "es" === a)) return true;
+  return false;
+}
+export function answerForm(question) {
   if (
     question.options ||
     question.kind === "essay" ||
     question.kind === "speaking"
   )
-    return false;
+    return "";
   const primary = Array.isArray(question.answer)
     ? question.answer[0]
     : question.answer;
-  return numericValue(primary) != null;
-};
+  if (timeValue(primary)) return "time";
+  if (numericValue(primary) != null) return "number";
+  return "";
+}
+const IELTS_LISTENING = [
+  [39, 40, 9],
+  [37, 38, 8.5],
+  [35, 36, 8],
+  [32, 34, 7.5],
+  [30, 31, 7],
+  [26, 29, 6.5],
+  [23, 25, 6],
+  [18, 22, 5.5],
+  [16, 17, 5],
+  [13, 15, 4.5],
+  [10, 12, 4],
+  [6, 9, 3.5],
+  [4, 5, 3],
+  [0, 3, 2.5],
+];
+const IELTS_READING = [
+  [39, 40, 9],
+  [37, 38, 8.5],
+  [35, 36, 8],
+  [33, 34, 7.5],
+  [30, 32, 7],
+  [27, 29, 6.5],
+  [23, 26, 6],
+  [19, 22, 5.5],
+  [15, 18, 5],
+  [13, 14, 4.5],
+  [10, 12, 4],
+  [8, 9, 3.5],
+  [6, 7, 3],
+  [0, 5, 2.5],
+];
+const TOEFL_READING = [
+  [48, 50, 6],
+  [44, 47, 5.5],
+  [40, 43, 5],
+  [35, 39, 4.5],
+  [30, 34, 4],
+  [25, 29, 3.5],
+  [20, 24, 3],
+  [15, 19, 2.5],
+  [10, 14, 2],
+  [5, 9, 1.5],
+  [0, 4, 1],
+];
+const TOEFL_LISTENING = [
+  [45, 47, 6],
+  [42, 44, 5.5],
+  [38, 41, 5],
+  [33, 37, 4.5],
+  [29, 32, 4],
+  [24, 28, 3.5],
+  [19, 23, 3],
+  [15, 18, 2.5],
+  [10, 14, 2],
+  [5, 9, 1.5],
+  [0, 4, 1],
+];
+function bandFrom(raw, table) {
+  return table.find(([min, max]) => raw >= min && raw <= max)?.[2] ?? null;
+}
+function roundBand(avg) {
+  const quarters = Math.round(avg * 4) / 4;
+  const fraction = Math.round((quarters - Math.floor(quarters)) * 100);
+  if (fraction === 25) return Math.floor(quarters) + 0.5;
+  if (fraction === 75) return Math.ceil(quarters);
+  return quarters;
+}
+export function officialScore(exam, sections) {
+  const parts = [];
+  for (const section of sections) {
+    if (!section.total) continue;
+    let band = null;
+    if (
+      exam === "ielts" &&
+      section.section === "Listening" &&
+      section.total >= 40
+    )
+      band = bandFrom(section.score, IELTS_LISTENING);
+    if (exam === "ielts" && section.section === "Reading" && section.total >= 40)
+      band = bandFrom(section.score, IELTS_READING);
+    if (
+      exam === "toefl" &&
+      section.section === "Reading" &&
+      section.total >= 50
+    )
+      band = bandFrom(section.score, TOEFL_READING);
+    if (
+      exam === "toefl" &&
+      section.section === "Listening" &&
+      section.total >= 47
+    )
+      band = bandFrom(section.score, TOEFL_LISTENING);
+    if (band != null)
+      parts.push({
+        section: section.section,
+        score: section.score,
+        total: section.total,
+        band,
+      });
+  }
+  if (!parts.length) return null;
+  return {
+    band: roundBand(parts.reduce((sum, part) => sum + part.band, 0) / parts.length),
+    bandParts: parts,
+  };
+}
 export function grade(test, answers) {
   const results = test.questions.map((q) => {
     const supplied = answers[q.id] ?? "";
@@ -314,21 +464,29 @@ export function grade(test, answers) {
       return { ...q, supplied, correct: null };
     const accepted =
       q.accepted ?? (Array.isArray(q.answer) ? q.answer : [q.answer]);
-    const suppliedNumber = numericValue(supplied);
     const correct = q.options
       ? accepted.some((a) => String(a) === String(supplied))
       : normalize(supplied) !== "" &&
-        accepted.some(
-          (a) =>
-            (q.kind === "sentence"
-              ? normalize(a).replace(/[.!?]+$/, "") ===
-                normalize(supplied).replace(/[.!?]+$/, "")
-              : normalize(a) === normalize(supplied)) ||
-            (suppliedNumber != null && numericValue(a) === suppliedNumber) ||
-            (Number.isFinite(Number(a)) &&
-              Number.isFinite(Number(supplied)) &&
-              Number(a) === Number(supplied)),
-        );
+        accepted.some((a) => {
+          if (
+            q.kind === "sentence" &&
+            normalize(a).replace(/[.!?]+$/, "") ===
+              normalize(supplied).replace(/[.!?]+$/, "")
+          )
+            return true;
+          if (normalize(a) === normalize(supplied)) return true;
+          if (timeValue(supplied) && timeValue(supplied) === timeValue(a))
+            return true;
+          const suppliedNumber = numericValue(supplied);
+          if (
+            timeValue(supplied) == null &&
+            timeValue(a) == null &&
+            suppliedNumber != null &&
+            numericValue(a) === suppliedNumber
+          )
+            return true;
+          return sameLoose(supplied, a);
+        });
     const words = {
       sponges: "хөвөн",
       sediments: "тунадас",
@@ -421,22 +579,24 @@ export function grade(test, answers) {
         typeof q.answer === "string" ? words[q.answer] || q.answer : undefined,
     };
   });
+  const sectionResults = [...new Set(results.map((q) => q.section))].map(
+    (section) => {
+      const items = results.filter((q) => q.section === section);
+      return {
+        section,
+        score: items.filter((q) => q.correct).length,
+        total: items.filter((q) => q.correct !== null).length,
+        selfReviewCount: items.filter((q) => q.correct === null).length,
+      };
+    },
+  );
   return {
     score: results.filter((q) => q.correct).length,
     total: results.filter((q) => q.correct !== null).length,
     selfReviewCount: results.filter((q) => q.correct === null).length,
     questionCount: results.length,
-    sectionResults: [...new Set(results.map((q) => q.section))].map(
-      (section) => {
-        const items = results.filter((q) => q.section === section);
-        return {
-          section,
-          score: items.filter((q) => q.correct).length,
-          total: items.filter((q) => q.correct !== null).length,
-          selfReviewCount: items.filter((q) => q.correct === null).length,
-        };
-      },
-    ),
+    sectionResults,
     results,
+    ...(officialScore(test.exam, sectionResults) ?? {}),
   };
 }
