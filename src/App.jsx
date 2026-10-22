@@ -16,7 +16,6 @@ import {
   useParams,
   useSearchParams,
 } from "react-router-dom";
-import { BrandMark } from "./Brand.jsx";
 import {
   ArrowRight,
   ArrowUpRight,
@@ -245,11 +244,7 @@ function AsteriskMark() {
 function Logo() {
   return (
     <Link className="logo" to="/" aria-label="Eight Steppe Academy home">
-      <BrandMark className="logo-mark" />
-      <span className="logo-words">
-        <span className="logo-name">Eight Steppe</span>
-        <span className="logo-academy">Academy</span>
-      </span>
+      <img className="logo-mark" src="/logo.jpg" alt="" />
     </Link>
   );
 }

@@ -264,27 +264,10 @@ ul {
   color: #161616;
 }
 .logo-mark {
-  width: 32px;
-  height: 42px;
+  height: 58px;
+  width: auto;
   display: block;
   flex: none;
-}
-.logo-words {
-  display: flex;
-  flex-direction: column;
-  line-height: 1;
-}
-.logo-name {
-  font-size: 20px;
-  font-weight: 700;
-  letter-spacing: 0.1px;
-}
-.logo-academy {
-  margin-top: 3px;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
 }
 .main-nav {
   display: flex;
@@ -934,11 +917,8 @@ ul {
   justify-content: space-between;
 }
 .footer .logo-mark {
-  width: 28px;
-  height: 36px;
-}
-.footer .logo-name {
-  font-size: 18px;
+  height: 48px;
+  width: auto;
 }
 .footer-top p {
   font-size: 10px;
@@ -2811,14 +2791,8 @@ ul {
     gap: 15px;
   }
   .logo-mark {
-    width: 26px;
-    height: 34px;
-  }
-  .logo-name {
-    font-size: 16px;
-  }
-  .logo-academy {
-    letter-spacing: 0.16em;
+    height: 46px;
+    width: auto;
   }
   .main-nav {
     gap: 17px;
@@ -3586,8 +3560,8 @@ ul {
     font-size: 8px;
     padding: 20px 0 25px;
   }
-  .footer .logo-name {
-    font-size: 16px;
+  .footer .logo-mark {
+    height: 42px;
   }
   .footer-top p {
     font-size: 9px;
