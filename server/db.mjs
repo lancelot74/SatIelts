@@ -32,6 +32,9 @@ export function sqlStatements(sql) {
 export function openDatabase(path) {
   const raw = new DatabaseSync(path);
   raw.exec(sqliteSchema);
+  const columns = raw.prepare("PRAGMA table_info(access_requests)").all();
+  if (!columns.some((column) => column.name === "plan"))
+    raw.exec("ALTER TABLE access_requests ADD COLUMN plan TEXT");
   return wrapSqlite(raw);
 }
 
@@ -131,6 +134,9 @@ export async function openPostgres(connectionString) {
     "utf8",
   );
   for (const statement of sqlStatements(schema)) await sql.unsafe(statement);
+  await sql.unsafe(
+    "ALTER TABLE access_requests ADD COLUMN IF NOT EXISTS plan text",
+  );
   const roles = await sql`
     select rolname from pg_roles where rolname in ('anon', 'authenticated')
   `;

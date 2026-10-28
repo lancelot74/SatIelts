@@ -16,6 +16,8 @@ import {
   useParams,
   useSearchParams,
 } from "react-router-dom";
+import { Landing, SaleBar } from "./Landing.jsx";
+import { planCode } from "./config/pricing.js";
 import {
   ArrowRight,
   ArrowUpRight,
@@ -94,7 +96,7 @@ function testLabel(number, t, examId) {
   return `${examId === "sat" && match[1] === "reading" ? t.readingWriting : t[match[1]]} · ${match[2] === "sample" ? t.sample : `${t.set} ${match[2]}`}`;
 }
 const Context = createContext(null);
-const useApp = () => useContext(Context);
+export const useApp = () => useContext(Context);
 async function request(url, options = {}) {
   const response = await fetch(url, {
     ...options,
@@ -274,6 +276,8 @@ function Header() {
             </NavLink>
           ))}
           <span className="nav-divider" />
+          <a href="/#pricing">{t.navPrice}</a>
+          <a href="/#faq">{t.navFaq}</a>
           <NavLink to="/account">{t.myLearning}</NavLink>
         </nav>
         <div className="header-actions">
@@ -325,6 +329,8 @@ function Footer() {
               <ArrowUpRight size={13} />
             </Link>
           ))}
+          <a href="tel:+97699292667">99292667</a>
+          <a href="tel:+97695331981">95331981</a>
         </div>
       </div>
       <div className="footer-bottom">
@@ -335,10 +341,14 @@ function Footer() {
   );
 }
 function ScrollManager() {
-  const { pathname } = useLocation();
+  const { pathname, hash } = useLocation();
   useEffect(() => {
+    if (hash) {
+      document.getElementById(hash.slice(1))?.scrollIntoView();
+      return;
+    }
     window.scrollTo(0, 0);
-  }, [pathname]);
+  }, [pathname, hash]);
   return null;
 }
 function ExamArt({ exam, compact = false }) {
@@ -379,199 +389,9 @@ function ExamArt({ exam, compact = false }) {
   );
 }
 function Home() {
-  const { t, catalog, lang, tr } = useApp();
-  const [demo, setDemo] = useState(null);
   return (
     <>
-      <main>
-        <section className="hero container">
-          <div className="hero-copy">
-            <div className="eyebrow">
-              <span className="tiny-star">
-                <AsteriskMark />
-              </span>
-              {t.eyebrow}
-            </div>
-            <h1>
-              {t.hero1}
-              <br />
-              <em>{t.hero2}</em>
-            </h1>
-            <p className="hero-description">{t.heroText}</p>
-            <div className="hero-actions">
-              <a className="button" href="#collection">
-                {t.explore}
-                <ArrowRight size={17} />
-              </a>
-              <Link className="text-link" to="/ielts/tests/sample">
-                {t.tryFree}
-                <ArrowUpRight size={17} />
-              </Link>
-            </div>
-            <p className="fine hero-fine">
-              <Check size={14} />
-              {t.freeNote}
-            </p>
-          </div>
-          <div className="hero-visual">
-            <div className="paper-back paper-back-one" />
-            <div className="paper-back paper-back-two" />
-            <div className="practice-paper">
-              <div className="paper-top">
-                <span>{t.daily}</span>
-                <Bookmark size={18} />
-              </div>
-              <div className="paper-exam">
-                <span className="tag sat">SAT</span>
-                <span>READING & WRITING</span>
-              </div>
-              <h2 lang="en">
-                One question.
-                <br />A fresh perspective.
-              </h2>
-              <p lang="en" className="demo-question">
-                {t.dailyPrompt}
-              </p>
-              <div
-                className="demo-choices"
-                role="group"
-                aria-label="Try a sample answer"
-              >
-                {["are", "were", "is", "have been"].map((a, i) => (
-                  <button
-                    key={a}
-                    className={`${demo === i ? "selected" : ""} ${demo === 2 && i === 2 ? "correct" : ""}`}
-                    onClick={() => setDemo(i)}
-                  >
-                    <span>{"ABCD"[i]}</span>
-                    {a}
-                    {demo === 2 && i === 2 && <Check size={14} />}
-                  </button>
-                ))}
-              </div>
-              <div className="paper-bottom" aria-live="polite">
-                {demo === null ? (
-                  <>
-                    <span>{t.dailyFooter}</span>
-                    <ArrowUpRight size={17} />
-                  </>
-                ) : (
-                  <span className={demo === 2 ? "demo-good" : ""}>
-                    {demo === 2 ? t.demoCorrect : t.demoWrong}
-                  </span>
-                )}
-              </div>
-            </div>
-            <div className="side-note">
-              <span>✧</span>
-              {lang === "en" ? (
-                <>
-                  A good place
-                  <br />
-                  to begin.
-                </>
-              ) : (
-                <>
-                  Эхлэхэд
-                  <br />
-                  сайхан газар.
-                </>
-              )}
-            </div>
-          </div>
-        </section>
-        <section className="collection-section container" id="collection">
-          <div className="section-heading">
-            <div>
-              <p className="eyebrow">{t.ourLibrary}</p>
-              <h2>{t.choose}</h2>
-            </div>
-            <p>{t.chooseText}</p>
-          </div>
-          <div className="exam-cards">
-            {catalog.map((exam, i) => (
-              <Link
-                to={`/${exam.id}`}
-                className={`exam-card ${exam.id}`}
-                key={exam.id}
-              >
-                <div className="exam-card-top">
-                  <span className="card-index">0{i + 1} /</span>
-                  <span className="edition">{exam.edition}</span>
-                </div>
-                <ExamArt exam={exam.id} />
-                <div className="exam-card-body">
-                  <h3>
-                    {exam.name}
-                    <ArrowUpRight />
-                  </h3>
-                  <p>{tr(exam.tagline)}</p>
-                  <div className="card-features">
-                    <span>
-                      <BookOpen size={14} />
-                      {exam.count} {t.practiceSets}
-                    </span>
-                    <span className="free-dot">{t.sample}</span>
-                  </div>
-                </div>
-              </Link>
-            ))}
-          </div>
-        </section>
-        <section className="features-strip container">
-          {[
-            [Languages, t.bilingual, t.bilingualText],
-            [Clock3, t.timed, t.timedText],
-            [BookOpen, t.learn, t.learnText],
-          ].map(([Icon, title, body]) => (
-            <article key={title}>
-              <span className="feature-icon">
-                <Icon size={21} strokeWidth={1.5} />
-              </span>
-              <h3>{title}</h3>
-              <p>{body}</p>
-            </article>
-          ))}
-        </section>
-        <section className="how-section container">
-          <div className="how-intro">
-            <p className="eyebrow">{t.how}</p>
-            <h2>{t.howTitle}</h2>
-            <div className="little-path" aria-hidden="true">
-              <span>01</span>
-              <i />
-              <span>02</span>
-              <i />
-              <span>03</span>
-              <ArrowUpRight />
-            </div>
-          </div>
-          <div className="how-steps">
-            {[1, 2, 3].map((n) => (
-              <article key={n}>
-                <span className="step-number">0{n}</span>
-                <div>
-                  <h3>{t[`step${n}`]}</h3>
-                  <p>{t[`step${n}Text`]}</p>
-                </div>
-              </article>
-            ))}
-          </div>
-        </section>
-        <section className="closing container">
-          <span className="closing-star" aria-hidden="true">
-            <AsteriskMark />
-          </span>
-          <div>
-            <h2>{t.bottomTitle}</h2>
-            <p>{t.bottomText}</p>
-          </div>
-          <a className="button" href="#collection">
-            {t.explore}
-            <ArrowRight size={17} />
-          </a>
-        </section>
-      </main>
+      <Landing />
       <Footer />
     </>
   );
@@ -874,13 +694,15 @@ function Locked({ exam, number = "reading-1" }) {
   const { t, session, api, refresh } = useApp();
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(null);
-  const pending =
-    session.requests.find((r) => r.exam === exam.id)?.status === "pending";
+  const pending = session.requests.some(
+    (r) =>
+      (r.exam === "all" || r.exam === exam.id) && r.status === "pending",
+  );
   async function ask() {
     setBusy(true);
     setError(null);
     try {
-      await api("/api/access-requests", { exam: exam.id });
+      await api("/api/access-requests", { exam: "all", plan: "month" });
       await refresh();
     } catch (e) {
       setError(e);
@@ -929,7 +751,7 @@ function Locked({ exam, number = "reading-1" }) {
           ) : (
             <Link
               className="button"
-              to={`/login?next=/${exam.id}/tests/${number}`}
+              to={`/login?next=/${exam.id}/tests/${number}&plan=month&group=1`}
             >
               {t.google}
               <ArrowUpRight size={17} />
@@ -954,6 +776,13 @@ function Login() {
   const [params] = useSearchParams();
   if (session.user) return <Account />;
   const next = params.get("next") || "/account";
+  const plan = params.get("plan") === "week" || params.get("plan") === "month"
+    ? params.get("plan")
+    : "";
+  const group = params.get("group") === "3" ? "3" : "";
+  const authQuery = new URLSearchParams({ next });
+  if (plan) authQuery.set("plan", plan);
+  if (group) authQuery.set("group", group);
   return (
     <main className="login-page container">
       <div className="login-decoration">
@@ -981,7 +810,7 @@ function Login() {
         {session.authAvailable ? (
           <a
             className="button google-button"
-            href={`/api/auth/google?next=${encodeURIComponent(next)}`}
+            href={`/api/auth/google?${authQuery}`}
           >
             <GoogleIcon />
             {t.google}
@@ -2098,11 +1927,28 @@ function Guide() {
     </main>
   );
 }
+function planKey(code) {
+  return (
+    {
+      week: "planWeek",
+      month: "planMonth",
+      "week-3": "planWeek3",
+      "month-3": "planMonth3",
+    }[code] || "planMonth"
+  );
+}
 function Account() {
   const { session, t, catalog, api, refresh, lang } = useApp();
   const navigate = useNavigate();
+  const [params] = useSearchParams();
   const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState(false);
   if (!session.user) return <Login />;
+  const chosen = planCode(params.get("plan"), params.get("group"));
+  const pendingAll = session.requests.some(
+    (r) => r.exam === "all" && r.status === "pending",
+  );
   async function logout() {
     try {
       await api("/api/logout");
@@ -2110,6 +1956,19 @@ function Account() {
       navigate("/");
     } catch (e) {
       setError(e);
+    }
+  }
+  async function requestPlan() {
+    setBusy(true);
+    setError(null);
+    try {
+      await api("/api/access-requests", { exam: "all", plan: chosen });
+      await refresh();
+      setSent(true);
+    } catch (e) {
+      setError(e);
+    } finally {
+      setBusy(false);
     }
   }
   return (
@@ -2134,6 +1993,21 @@ function Account() {
         </div>
       </div>
       {error && <ErrorState error={error} />}
+      {chosen && (
+        <section className="notice">
+          <div>
+            <strong>{t.chosenPlan}</strong>
+            <p>{t[planKey(chosen)]}</p>
+          </div>
+          {pendingAll || sent ? (
+            <p>{t.pendingDetail}</p>
+          ) : (
+            <button className="button" disabled={busy} onClick={requestPlan}>
+              {busy ? t.loading : t.getAccess}
+            </button>
+          )}
+        </section>
+      )}
       <h2>{t.yourCollections}</h2>
       <div className="account-collections">
         {catalog.map((exam) => (
@@ -2148,7 +2022,8 @@ function Account() {
               <span>
                 {session.user.isAdmin || session.grants.includes(exam.id)
                   ? t.accessApproved
-                  : session.requests.some(
+                  : pendingAll ||
+                      session.requests.some(
                         (r) => r.exam === exam.id && r.status === "pending",
                       )
                     ? t.pending
@@ -2276,8 +2151,9 @@ function AdminPanel() {
                     <strong>{row.name}</strong>
                     <small>{row.email}</small>
                   </div>
-                  <span className={`tag ${row.exam}`}>
-                    {row.exam.toUpperCase()}
+                  <span className={`tag ${row.exam === "all" ? "sat" : row.exam}`}>
+                    {row.exam === "all" ? t.allExams : row.exam.toUpperCase()}
+                    {row.plan ? ` · ${t[planKey(row.plan)]}` : ""}
                   </span>
                   <span className="status">
                     {row.status === "pending" ? t.pending : t[row.status]}
@@ -2385,6 +2261,7 @@ export default function App() {
       <a href="#main-content" className="skip-link">
         Skip to content
       </a>
+      <SaleBar />
       <Header />
       <div id="main-content">
         <Routes>

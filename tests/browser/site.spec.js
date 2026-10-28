@@ -16,7 +16,7 @@ test("homepage, language persistence, all exam pages and guide chapters", async 
   page.on("pageerror", (e) => errors.push(e.message));
   await english(page);
   await expect(
-    page.getByRole("heading", { name: "A little practice. A bigger world." }),
+    page.getByRole("heading", { name: "Test yourself before the exam." }),
   ).toBeVisible();
   for (const exam of ["ielts", "toefl", "sat"]) {
     await page.goto("/" + exam);
@@ -151,7 +151,7 @@ test("Google account, access request, admin approval, member test and revocation
   await s.goto("/toefl/tests/1");
   await expect(
     s.getByRole("heading", {
-      name: "One exam. The whole practice collection.",
+      name: "One plan. All three exams.",
     }),
   ).toBeVisible();
   await student.close();

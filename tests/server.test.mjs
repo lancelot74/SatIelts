@@ -297,6 +297,38 @@ test("manual access approval, per-exam isolation, revocation, admin restrictions
   assert.equal(f.db.prepare("SELECT count(*) AS n FROM audit").get().n, 2);
   f.db.close();
 });
+
+test("one plan approval unlocks IELTS, TOEFL, and SAT", async () => {
+  const f = fixture(),
+    student = f.agent(),
+    owner = f.agent();
+  const s = await login(student, "learner");
+  const o = await login(owner, "owner");
+  await mutate(student, "post", "/api/access-requests", s.csrf, {
+    exam: "all",
+    plan: "month-3",
+  }).expect(200);
+  const request = (await owner.get("/api/admin").expect(200)).body.requests[0];
+  assert.equal(request.exam, "all");
+  assert.equal(request.plan, "month-3");
+  await student.get("/api/tests/sat/1").expect(403);
+  await mutate(owner, "post", "/api/admin/access", o.csrf, {
+    userId: s.user.id,
+    exam: "all",
+    action: "approve",
+  }).expect(200);
+  await student.get("/api/tests/ielts/1").expect(200);
+  await student.get("/api/tests/toefl/1").expect(200);
+  await student.get("/api/tests/sat/1").expect(200);
+  await mutate(owner, "post", "/api/admin/access", o.csrf, {
+    userId: s.user.id,
+    exam: "all",
+    action: "revoke",
+  }).expect(200);
+  await student.get("/api/tests/ielts/1").expect(403);
+  await student.get("/api/tests/sat/1").expect(403);
+  f.db.close();
+});
 test("CSRF, request validation and logout protect authenticated mutations", async () => {
   const f = fixture(),
     a = f.agent(),

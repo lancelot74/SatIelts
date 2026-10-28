@@ -4486,3 +4486,236 @@ textarea:focus-visible {
     overflow-wrap: anywhere;
   }
 }
+
+.sale-bar {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  padding: 8px 16px;
+  background: #c8102e;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  text-align: center;
+}
+.sale-bar small {
+  font-weight: 650;
+  margin-right: 4px;
+}
+.landing {
+  color: #161616;
+}
+.land-hero,
+.land-section {
+  padding-top: 48px;
+  padding-bottom: 12px;
+}
+.land-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+  gap: 36px;
+  align-items: center;
+}
+.land-hero h1,
+.land-section h2,
+.land-final h2 {
+  font-family: "Manrope Variable", Arial, sans-serif;
+  font-weight: 750;
+  letter-spacing: -0.04em;
+  line-height: 1.08;
+}
+.land-hero h1 {
+  font-size: clamp(40px, 6vw, 68px);
+  margin: 12px 0 16px;
+}
+.landing .section-heading {
+  display: block;
+}
+.landing .section-heading > p,
+.landing .how-steps p,
+.landing .how-steps h3 {
+  font-size: 17px;
+  line-height: 1.55;
+  max-width: 62ch;
+}
+.landing .how-steps h3 {
+  font-size: 22px;
+}
+.landing .exam-card {
+  padding-bottom: 20px;
+}
+.landing .button {
+  background: #c8102e;
+  border-color: #9d0c24;
+  min-height: 48px;
+}
+.landing .button:hover:not(:disabled) {
+  background: #9d0c24;
+}
+.landing .button.secondary {
+  background: transparent;
+  color: #161616;
+  border-color: #161616;
+}
+.landing .button.secondary:hover:not(:disabled) {
+  background: #f3f1ea;
+}
+.land-price-line {
+  margin: 16px 0 8px;
+  font-size: 16px;
+}
+.price-pair s,
+.price-main s {
+  color: #777;
+  margin-right: 8px;
+}
+.price-main strong {
+  font-size: 36px;
+  letter-spacing: -0.04em;
+}
+.land-demo .practice-paper {
+  background: #fff;
+  border: 1px solid #e6e2d8;
+  border-radius: 16px;
+  padding: 22px;
+  box-shadow: 0 18px 40px #29322c14;
+}
+.demo-timer {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.land-demo .demo-choices {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.land-demo .demo-choices span {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid #e3e4dc;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.plan-toggle {
+  display: flex;
+  width: min(100%, 360px);
+  border: 1px solid #161616;
+  border-radius: 999px;
+  overflow: hidden;
+  margin: 18px 0;
+}
+.plan-toggle button {
+  flex: 1;
+  min-height: 48px;
+  border: 0;
+  background: transparent;
+  font-weight: 700;
+}
+.plan-toggle button.active {
+  background: #161616;
+  color: #fff;
+}
+.price-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.price-card {
+  border: 1px solid #e3e4dc;
+  border-radius: 16px;
+  padding: 22px;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.price-card.featured {
+  border-color: #c8102e;
+}
+.card-flag {
+  color: #c8102e;
+  font-size: 13px;
+  font-weight: 750;
+}
+.price-card .button {
+  margin-top: auto;
+}
+.stack-note,
+.pay-steps {
+  margin-top: 16px;
+}
+.pay-steps {
+  padding-left: 18px;
+}
+.pay-steps li {
+  margin: 6px 0;
+}
+.benefit-grid,
+.latest-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+.latest-row {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.benefit-grid article {
+  border-top: 2px solid #161616;
+  padding-top: 14px;
+}
+.faq-list details {
+  border-bottom: 1px solid #e3e4dc;
+  padding: 12px 0;
+}
+.faq-list summary {
+  cursor: pointer;
+  font-weight: 750;
+  font-size: 17px;
+}
+.land-final {
+  margin-top: 36px;
+  background: #161616;
+  color: #fff;
+  padding: 56px 0;
+}
+.land-final .button.secondary {
+  color: #fff;
+  border-color: #fff;
+}
+.land-final .button.secondary:hover:not(:disabled) {
+  background: #2a2a2a;
+}
+.sticky-free {
+  display: none;
+}
+@media (max-width: 800px) {
+  .land-hero,
+  .price-cards,
+  .benefit-grid,
+  .latest-row {
+    grid-template-columns: 1fr;
+  }
+  .sticky-free {
+    display: flex;
+    position: fixed;
+    z-index: 30;
+    left: 16px;
+    right: 16px;
+    bottom: 12px;
+    min-height: 48px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    background: #c8102e;
+    color: #fff;
+    font-weight: 750;
+  }
+  .landing {
+    padding-bottom: 76px;
+  }
+}

@@ -28,6 +28,8 @@ const ALIAS_HOSTS = new Set([
   "www.eightsteppe.com",
   "www.eightsteppe.org",
 ]);
+const ALL_EXAMS = ["ielts", "toefl", "sat"];
+const PLAN_CODES = new Set(["week", "month", "week-3", "month-3"]);
 const random = () => randomBytes(32).toString("base64url");
 const asNumber = (value) => (value == null ? value : Number(value));
 const asRun = (row) => {
@@ -183,7 +185,7 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
         : [],
       requests: req.user
         ? await db.all(
-            "SELECT exam,status FROM access_requests WHERE user_id=?",
+            "SELECT exam,status,plan FROM access_requests WHERE user_id=?",
             [req.user.id],
           )
         : [],
@@ -242,12 +244,19 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
         /^\/(ielts|toefl|sat|account|admin)(\/[^?#]*)?$/.test(req.query.next)
           ? req.query.next
           : "/account";
+      const plan =
+        req.query.plan === "week" || req.query.plan === "month"
+          ? req.query.plan
+          : "";
+      const group = req.query.group === "3" ? "3" : "1";
       req.session.oauth = {
         state,
         nonce,
         verifier,
         created: now(),
         next: destination,
+        plan,
+        group,
       };
       const url = oauth.generateAuthUrl({
         scope: ["openid", "email", "profile"],
@@ -307,11 +316,13 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
         if (err) return res.redirect("/login?error=sign_in_failed");
         req.session.userId = user.id;
         req.session.csrf = random();
-        req.session.save((error) =>
-          error
-            ? res.redirect("/login?error=sign_in_failed")
-            : res.redirect(pending.next),
-        );
+        req.session.save((error) => {
+          if (error) return res.redirect("/login?error=sign_in_failed");
+          const target = pending.plan
+            ? `/account?plan=${pending.plan}&group=${pending.group === "3" ? "3" : "1"}`
+            : pending.next;
+          res.redirect(target);
+        });
       });
     } catch {
       res.redirect("/login?error=sign_in_failed");
@@ -517,13 +528,28 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
     rateLimit({ windowMs: 60000, limit: 10 }),
     async (req, res, next) => {
       try {
-      const exam = req.body.exam;
-      if (!examById(exam))
+      const exam = req.body?.exam;
+      const plan = req.body?.plan ?? null;
+      if (exam === "all") {
+        if (!PLAN_CODES.has(plan))
+          return res.status(400).json({ error: "invalid_plan" });
+        const owned = new Set(
+          (
+            await db.all("SELECT exam FROM grants WHERE user_id=?", [
+              req.user.id,
+            ])
+          ).map((row) => row.exam),
+        );
+        if (ALL_EXAMS.every((id) => owned.has(id)))
+          return res.json({ status: "approved" });
+      } else if (!examById(exam)) {
         return res.status(400).json({ error: "invalid_exam" });
-      if (await hasAccess(req, exam)) return res.json({ status: "approved" });
+      } else if (await hasAccess(req, exam)) {
+        return res.json({ status: "approved" });
+      }
       await db.run(
-        "INSERT INTO access_requests (user_id,exam) VALUES (?,?) ON CONFLICT(user_id,exam) DO UPDATE SET status='pending',created_at=CURRENT_TIMESTAMP",
-        [req.user.id, exam],
+        "INSERT INTO access_requests (user_id,exam,plan) VALUES (?,?,?) ON CONFLICT(user_id,exam) DO UPDATE SET status='pending',plan=excluded.plan,created_at=CURRENT_TIMESTAMP",
+        [req.user.id, exam, exam === "all" ? plan : null],
       );
       res.json({ status: "pending" });
       } catch (error) {
@@ -548,24 +574,28 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
   app.post("/api/admin/access", admin, async (req, res, next) => {
     try {
     const { userId, exam, action } = req.body;
+    const covered = exam === "all" ? ALL_EXAMS : [exam];
     if (
       !Number.isInteger(userId) ||
-      !examById(exam) ||
+      (exam !== "all" && !examById(exam)) ||
       !["approve", "revoke", "reject"].includes(action) ||
       !(await db.get("SELECT id FROM users WHERE id=?", [userId]))
     )
       return res.status(400).json({ error: "invalid_request" });
     await db.transaction(async (tx) => {
-      if (action === "approve")
-        await tx.run(
-          "INSERT INTO grants (user_id,exam,granted_by) VALUES (?,?,?) ON CONFLICT(user_id,exam) DO UPDATE SET granted_by=excluded.granted_by",
-          [userId, exam, req.user.id],
-        );
-      else if (action === "revoke")
-        await tx.run("DELETE FROM grants WHERE user_id=? AND exam=?", [
-          userId,
-          exam,
-        ]);
+      if (action === "approve") {
+        for (const id of covered)
+          await tx.run(
+            "INSERT INTO grants (user_id,exam,granted_by) VALUES (?,?,?) ON CONFLICT(user_id,exam) DO UPDATE SET granted_by=excluded.granted_by",
+            [userId, id, req.user.id],
+          );
+      } else if (action === "revoke") {
+        for (const id of covered)
+          await tx.run("DELETE FROM grants WHERE user_id=? AND exam=?", [
+            userId,
+            id,
+          ]);
+      }
       await tx.run(
         "UPDATE access_requests SET status=? WHERE user_id=? AND exam=?",
         [action === "approve" ? "approved" : "rejected", userId, exam],
