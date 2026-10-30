@@ -22,6 +22,7 @@ import {
   testSummary,
 } from "./tests.mjs";
 import { fullModes, fullVariants } from "./full.mjs";
+import { createOrder, activateOrder, activeEntitlement, linkFriendEntitlements } from "./orders.mjs";
 const CANONICAL_ORIGIN = "https://eightsteppe.org";
 const ALIAS_HOSTS = new Set([
   "eightsteppe.com",
@@ -45,6 +46,20 @@ const same = (a, b) =>
   typeof b === "string" &&
   Buffer.byteLength(a) === Buffer.byteLength(b) &&
   timingSafeEqual(Buffer.from(a), Buffer.from(b));
+function publicOrder(order) {
+  return {
+    code: order.code,
+    plan: order.plan,
+    group: Number(order.group_size),
+    amount: Number(order.amount_mnt),
+    list: Number(order.list_amount_mnt),
+    sale: Boolean(order.sale_applied),
+    status: order.status,
+    expiresAt: Number(order.expires_at),
+    paidAt: order.paid_at ? Number(order.paid_at) : null,
+    friends: JSON.parse(order.friend_emails || "[]"),
+  };
+}
 export function createApp({ db, config, oauthClient, now = Date.now }) {
   prepareRuns(db);
   const app = express();
@@ -138,10 +153,12 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
     req.isAdmin ||
     Boolean(
       req.user &&
-      (await db.get(
-        "SELECT 1 AS ok FROM grants WHERE user_id=? AND exam=?",
-        [req.user.id, exam],
-      )),
+      examById(exam) &&
+      ((await activeEntitlement(db, req.user, now())) ||
+        (await db.get(
+          "SELECT 1 AS ok FROM grants WHERE user_id=? AND exam=?",
+          [req.user.id, exam],
+        ))),
     );
   const authorizeTest = async (req, res, next) => {
     try {
@@ -172,16 +189,29 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
   });
   app.get("/api/session", async (req, res, next) => {
     try {
+    const entitlement = req.user
+      ? await activeEntitlement(db, req.user, now())
+      : null;
+    const grantRows = req.user
+      ? (
+          await db.all("SELECT exam FROM grants WHERE user_id=?", [
+            req.user.id,
+          ])
+        ).map((x) => x.exam)
+      : [];
     res.json({
       user: req.user ? { ...req.user, isAdmin: req.isAdmin } : null,
       csrf: req.session.csrf,
       authAvailable,
-      grants: req.user
-        ? (
-            await db.all("SELECT exam FROM grants WHERE user_id=?", [
-              req.user.id,
-            ])
-          ).map((x) => x.exam)
+      grants: entitlement ? ["ielts", "toefl", "sat"] : grantRows,
+      access: entitlement
+        ? { active: true, endsAt: Number(entitlement.ends_at) }
+        : { active: false, endsAt: null },
+      orders: req.user
+        ? await db.all(
+            "SELECT code,plan,group_size,amount_mnt,status,expires_at,paid_at FROM orders WHERE user_id=? ORDER BY created_at DESC",
+            [req.user.id],
+          )
         : [],
       requests: req.user
         ? await db.all(
@@ -239,11 +269,13 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
       const verifier = random();
       const state = random();
       const nonce = random();
-      const destination =
-        typeof req.query.next === "string" &&
-        /^\/(ielts|toefl|sat|account|admin)(\/[^?#]*)?$/.test(req.query.next)
-          ? req.query.next
-          : "/account";
+      const pathOnly =
+        typeof req.query.next === "string" ? req.query.next.split("?")[0] : "";
+      const nextOk =
+        /^\/(ielts|toefl|sat|account|admin)(\/[^?#]*)?$/.test(pathOnly) ||
+        pathOnly === "/checkout" ||
+        /^\/checkout\/ES-\d{4,5}$/.test(pathOnly);
+      const destination = nextOk ? req.query.next.split("#")[0] : "/account";
       const plan =
         req.query.plan === "week" || req.query.plan === "month"
           ? req.query.plan
@@ -309,18 +341,22 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
           String(profile.name || profile.email).slice(0, 120),
         ],
       );
-      const user = await db.get("SELECT id FROM users WHERE google_sub=?", [
+      const user = await db.get("SELECT id,email FROM users WHERE google_sub=?", [
         profile.sub,
       ]);
+      await linkFriendEntitlements(db, user);
       req.session.regenerate((err) => {
         if (err) return res.redirect("/login?error=sign_in_failed");
         req.session.userId = user.id;
         req.session.csrf = random();
         req.session.save((error) => {
           if (error) return res.redirect("/login?error=sign_in_failed");
-          const target = pending.plan
-            ? `/account?plan=${pending.plan}&group=${pending.group === "3" ? "3" : "1"}`
-            : pending.next;
+          const checkout = `/checkout?plan=${pending.plan}&group=${pending.group === "3" ? "3" : "1"}`;
+          const target = String(pending.next || "").startsWith("/checkout")
+            ? pending.next
+            : pending.plan
+              ? checkout
+              : pending.next;
           res.redirect(target);
         });
       });
@@ -522,6 +558,59 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
       ? res.json(JSON.parse(req.run.result))
       : res.status(404).json({ error: "not_finished" }),
   );
+  app.post("/api/orders", login, async (req, res, next) => {
+    try {
+      const created = await createOrder(db, req.user, req.body || {}, now());
+      if (created.error) return res.status(400).json({ error: created.error });
+      res.json(publicOrder(created.order));
+    } catch (error) {
+      next(error);
+    }
+  });
+  app.get("/api/orders/:code", login, async (req, res, next) => {
+    try {
+      const order = await db.get("SELECT * FROM orders WHERE code=?", [
+        req.params.code,
+      ]);
+      if (
+        !order ||
+        (Number(order.user_id) !== Number(req.user.id) && !req.isAdmin)
+      )
+        return res.status(404).json({ error: "not_found" });
+      if (
+        order.status === "awaiting_payment" &&
+        Number(order.expires_at) <= now()
+      ) {
+        await db.run(
+          "UPDATE orders SET status='expired' WHERE id=? AND status='awaiting_payment'",
+          [order.id],
+        );
+        order.status = "expired";
+      }
+      res.json(publicOrder(order));
+    } catch (error) {
+      next(error);
+    }
+  });
+  app.post("/api/admin/orders/approve", admin, async (req, res, next) => {
+    try {
+      const note = String(req.body?.note || "").trim();
+      if (note.length < 3)
+        return res.status(400).json({ error: "note_required" });
+      const result = await db.transaction((tx) =>
+        activateOrder(tx, {
+          code: String(req.body?.code || ""),
+          actorId: req.user.id,
+          now: now(),
+          note,
+        }),
+      );
+      if (result.error) return res.status(400).json(result);
+      res.json({ ok: true, endsAt: result.endsAt });
+    } catch (error) {
+      next(error);
+    }
+  });
   app.post(
     "/api/access-requests",
     login,
@@ -566,6 +655,9 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
       grants: await db.all(
         "SELECT g.*,u.email,u.name FROM grants g JOIN users u ON g.user_id=u.id ORDER BY g.created_at DESC",
       ),
+      orders: await db.all(
+        "SELECT o.*,u.email,u.name FROM orders o JOIN users u ON u.id=o.user_id ORDER BY o.created_at ASC",
+      ),
     });
     } catch (error) {
       next(error);
@@ -590,11 +682,16 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
             [userId, id, req.user.id],
           );
       } else if (action === "revoke") {
-        for (const id of covered)
-          await tx.run("DELETE FROM grants WHERE user_id=? AND exam=?", [
-            userId,
-            id,
-          ]);
+        if (exam === "all") {
+          await tx.run("DELETE FROM entitlements WHERE user_id=?", [userId]);
+          await tx.run("DELETE FROM grants WHERE user_id=?", [userId]);
+        } else {
+          for (const id of covered)
+            await tx.run("DELETE FROM grants WHERE user_id=? AND exam=?", [
+              userId,
+              id,
+            ]);
+        }
       }
       await tx.run(
         "UPDATE access_requests SET status=? WHERE user_id=? AND exam=?",

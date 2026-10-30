@@ -577,6 +577,7 @@ export function grade(test, answers) {
       correct,
       answerMn:
         typeof q.answer === "string" ? words[q.answer] || q.answer : undefined,
+      transcript: q.section === "Listening" ? passage : undefined,
     };
   });
   const sectionResults = [...new Set(results.map((q) => q.section))].map(

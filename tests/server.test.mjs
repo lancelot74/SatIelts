@@ -329,6 +329,31 @@ test("one plan approval unlocks IELTS, TOEFL, and SAT", async () => {
   await student.get("/api/tests/sat/1").expect(403);
   f.db.close();
 });
+
+test("a bank order opens every exam after manual confirmation", async () => {
+  const f = fixture(),
+    student = f.agent(),
+    owner = f.agent();
+  const s = await login(student, "payer");
+  const o = await login(owner, "owner");
+  const order = (
+    await mutate(student, "post", "/api/orders", s.csrf, {
+      plan: "week",
+      group: 1,
+    }).expect(200)
+  ).body;
+  assert.match(order.code, /^ES-\d{4}$/);
+  assert.equal(order.amount, 3500);
+  await student.get("/api/tests/sat/1").expect(403);
+  await mutate(owner, "post", "/api/admin/orders/approve", o.csrf, {
+    code: order.code,
+    note: "Messenger screenshot",
+  }).expect(200);
+  await student.get("/api/tests/ielts/1").expect(200);
+  await student.get("/api/tests/toefl/1").expect(200);
+  await student.get("/api/tests/sat/1").expect(200);
+  f.db.close();
+});
 test("CSRF, request validation and logout protect authenticated mutations", async () => {
   const f = fixture(),
     a = f.agent(),

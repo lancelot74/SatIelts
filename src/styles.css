@@ -2402,12 +2402,32 @@ ul {
   margin-top: 3px;
 }
 .lesson-original {
-  font-family: "Manrope Variable", sans-serif;
+  font-family: var(--font-sans);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-size: 12px;
-  line-height: 1.95;
-  color: #5d6a51;
+  font-size: 18px;
+  line-height: 1.6;
+  color: var(--color-ink);
+  max-width: 68ch;
+}
+.review-transcript {
+  margin-top: 12px;
+}
+.review-transcript p {
+  white-space: pre-wrap;
+  font-size: 16px;
+  line-height: 1.6;
+}
+.results-follow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin: 24px 0;
+}
+@media (max-width: 800px) {
+  .results-follow {
+    grid-template-columns: 1fr;
+  }
 }
 .lesson > .fine {
   border-top: 1px solid var(--line);
@@ -4493,15 +4513,17 @@ textarea:focus-visible {
   align-items: center;
   flex-wrap: wrap;
   gap: 10px 16px;
+  min-height: 40px;
   padding: 8px 16px;
-  background: #c8102e;
-  color: #fff;
+  background: var(--color-primary);
+  color: var(--color-on-primary);
   font-size: 14px;
-  font-weight: 700;
+  font-weight: 600;
   text-align: center;
 }
 .sale-bar small {
-  font-weight: 650;
+  color: var(--color-sale-on-dark);
+  font-weight: 600;
   margin-right: 4px;
 }
 .landing {

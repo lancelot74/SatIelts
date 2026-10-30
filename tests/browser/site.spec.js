@@ -106,7 +106,7 @@ test("all three free samples can be completed and paid tests show the access gat
   await page.goto("/sat/tests/1");
   await expect(
     page.getByRole("heading", {
-      name: "One exam. The whole practice collection.",
+      name: "One plan. All three exams.",
     }),
   ).toBeVisible();
   await expect(
@@ -124,12 +124,14 @@ test("Google account, access request, admin approval, member test and revocation
   await english(s);
   await googleLogin(s, "student");
   await s.goto("/toefl/tests/1");
-  await s.getByRole("button", { name: "Request access", exact: true }).click();
-  await expect(s.locator(".notice.success")).toContainText("Request sent");
+  await s.getByRole("link", { name: "Get access", exact: true }).click();
+  await s.getByRole("button", { name: "Create order" }).click();
+  await expect(s.locator(".order-code")).toContainText("ES-");
   await english(o);
   await googleLogin(o, "owner");
   await o.getByRole("link", { name: "Manage access" }).click();
-  await o.getByRole("button", { name: "Approve", exact: true }).click();
+  o.once("dialog", (dialog) => dialog.accept("Messenger screenshot"));
+  await o.getByRole("button", { name: "Confirm payment" }).click();
   await expect(o.getByRole("button", { name: "Revoke access" })).toBeVisible();
   await s.reload();
   await s.getByRole("button", { name: "Begin practice" }).click();
@@ -295,9 +297,10 @@ test("IELTS full practice saves essays, shows transcript help and separates self
   await page.goto("/ielts/tests/full-sample");
   await expect(page.locator(".test-outline > div")).toHaveCount(4);
   await page.getByRole("button", { name: "Begin practice" }).click();
-  await expect(page.locator(".passage-panel")).toContainText(
-    "LISTENING TRANSCRIPT",
+  await expect(page.locator(".listening-player")).toContainText(
+    "The transcript appears after you finish",
   );
+  await expect(page.locator(".player")).not.toContainText("B-A-R-R-E-T-T");
   await page.getByPlaceholder("Type your answer in English").fill("Barrett");
   await page
     .getByRole("button", { name: "Монгол тусламж", exact: true })
@@ -330,6 +333,9 @@ test("IELTS full practice saves essays, shows transcript help and separates self
   await expect(page.locator(".score-card")).toContainText("1 / 9 correct");
   await expect(page.locator(".section-results > div")).toHaveCount(4);
   await expect(page.locator(".review-item.self-review")).toHaveCount(2);
+  await expect(page.locator(".review-transcript")).toContainText(
+    "B-A-R-R-E-T-T",
+  );
   await expect(page.locator(".review-item.self-review").first()).toContainText(
     essay.trim(),
   );

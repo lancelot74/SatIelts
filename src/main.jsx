@@ -3,6 +3,8 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter, useLocation } from "react-router-dom";
 import "@fontsource-variable/manrope";
 import App from "./App.jsx";
+import "./styles/tokens.css";
+import "./styles/backgrounds.css";
 import "./styles.css";
 
 const CANONICAL_ORIGIN = "https://eightsteppe.org";

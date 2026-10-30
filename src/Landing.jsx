@@ -13,11 +13,6 @@ import { useApp } from "./App.jsx";
 import { formatTugrik, offer, SALE_END } from "./config/pricing.js";
 
 const PHONES = ["99292667", "95331981"];
-const LATEST = [
-  { exam: "ielts", to: "/ielts" },
-  { exam: "toefl", to: "/toefl" },
-  { exam: "sat", to: "/sat" },
-];
 
 export function useNow(ms = 30000) {
   const [now, setNow] = useState(() => Date.now());
@@ -83,7 +78,10 @@ export function Landing() {
 
   function choose(plan) {
     const query = new URLSearchParams({ plan, group });
-    return session.user ? `/account?${query}` : `/login?${query}`;
+    const checkout = `/checkout?${query}`;
+    return session.user
+      ? checkout
+      : `/login?next=${encodeURIComponent(checkout)}`;
   }
 
   async function copyLink() {
@@ -97,7 +95,7 @@ export function Landing() {
 
   return (
     <main className="landing">
-      <section className="land-hero container">
+      <section className="land-hero bg-horizon container">
         <div>
           <p className="eyebrow">{t.landEyebrow}</p>
           <h1>{t.heroTitle}</h1>
@@ -221,17 +219,6 @@ export function Landing() {
             <p>{body}</p>
           </article>
         ))}
-      </section>
-
-      <section className="container land-section">
-        <h2>{t.newWeek}</h2>
-        <div className="latest-row">
-          {LATEST.map((item) => (
-            <Link key={item.exam} to={item.to} className={`tag ${item.exam}`}>
-              {item.exam.toUpperCase()} · {t.fullLength}
-            </Link>
-          ))}
-        </div>
       </section>
 
       <section className="container land-section" id="pricing">

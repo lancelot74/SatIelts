@@ -46,3 +46,18 @@ export function planCode(plan, group) {
   if (plan !== "week" && plan !== "month") return null;
   return String(group) === "3" ? `${plan}-3` : plan;
 }
+
+export function priceFor(plan, group, at = Date.now()) {
+  if (plan !== "week" && plan !== "month") return null;
+  const friends = String(group) === "3";
+  const current = offer(at);
+  const row = friends ? current.friends[plan] : current.solo[plan];
+  return {
+    plan,
+    group: friends ? 3 : 1,
+    amount: friends ? row.total : row.price,
+    list: friends ? row.listTotal : row.list,
+    each: friends ? row.each : row.price,
+    sale: current.sale,
+  };
+}

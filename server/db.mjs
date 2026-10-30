@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import session from "express-session";
 import postgres from "postgres";
+import { paymentTables, migrateLegacyGrants } from "./orders.mjs";
 
 const sqliteSchema = `PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
  CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, google_sub TEXT UNIQUE NOT NULL, email TEXT NOT NULL, name TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
@@ -35,6 +36,30 @@ export function openDatabase(path) {
   const columns = raw.prepare("PRAGMA table_info(access_requests)").all();
   if (!columns.some((column) => column.name === "plan"))
     raw.exec("ALTER TABLE access_requests ADD COLUMN plan TEXT");
+  raw.exec(paymentTables);
+  const legacy = raw
+    .prepare(
+      "SELECT DISTINCT g.user_id AS id, u.email AS email FROM grants g JOIN users u ON u.id=g.user_id",
+    )
+    .all();
+  const exists = raw.prepare(
+    "SELECT 1 AS ok FROM entitlements WHERE user_id=? AND source='legacy'",
+  );
+  const insert = raw.prepare(
+    "INSERT INTO entitlements (user_id,email,starts_at,ends_at,source,created_at) VALUES (?,?,?,?,?,?)",
+  );
+  const now = Date.now();
+  for (const row of legacy) {
+    if (exists.get(row.id)) continue;
+    insert.run(
+      row.id,
+      String(row.email).toLowerCase(),
+      now,
+      now + 30 * 86400000,
+      "legacy",
+      now,
+    );
+  }
   return wrapSqlite(raw);
 }
 
@@ -152,6 +177,9 @@ export async function openPostgres(connectionString) {
     transaction: (fn) => sql.begin(async (tx) => fn(queryApi(tx))),
     close: () => sql.end({ timeout: 5 }),
   };
+  for (const statement of sqlStatements(paymentTables))
+    await sql.unsafe(statement);
+  await migrateLegacyGrants(api);
   return api;
 }
 

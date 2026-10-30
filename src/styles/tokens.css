@@ -1,0 +1,141 @@
+/* ==========================================================================
+   Eight Steppe Academy — design tokens  (Direction A "Focus Studio")
+   Source of truth for SITE-DESIGN-SPEC.md. Copy to src/styles/tokens.css and
+   import it FIRST (before any other CSS) from src/main.tsx.
+   Contrast verified with site-design/contrast_check.py (all text pairs ≥ 4.5:1,
+   UI/non-text ≥ 3:1). 500-level exam colors are decorative / charts only —
+   never use them for text.
+   ========================================================================== */
+
+/* ---- Fonts: Noto Sans variable, self-hosted, only 400 + 600 used ---------- */
+/* Put the font file in /public/fonts/. Subset to latin + cyrillic (+ ₮ U+20AE)
+   with e.g. `pyftsubset NotoSans.ttf --unicodes="U+0000-00FF,U+0400-04FF,U+2000-206F,U+20AE,U+2190-21FF" --flavor=woff2`. */
+@font-face{
+  font-family:"Noto Sans";
+  src:url("/fonts/NotoSans-var.woff2") format("woff2");
+  font-weight:400 600; font-style:normal; font-display:swap;
+}
+
+:root{
+  /* ---- Neutrals ---------------------------------------------------------- */
+  --color-canvas:#F5F7FA;        /* app/page background (learning + test layouts) */
+  --color-paper:#FAFAF8;         /* guide reading column background (warm, optional) */
+  --color-surface:#FFFFFF;       /* cards, panels, header, passages */
+  --color-ink:#1F2328;           /* body text — 15.8:1 on white, 14.7:1 on canvas */
+  --color-muted:#5B636E;         /* secondary text — 5.66:1 on canvas, ≥5.0 on every exam-50/100 */
+  --color-line:#DBE0E7;          /* hairlines/dividers (decorative, not a control boundary) */
+  --color-control:#7B8492;       /* input / radio / secondary-button borders — 3.78:1 (UI ≥3:1) */
+  --color-primary:#26324A;       /* navy: global CTAs, sale bar, final CTA band — white on it 12.8:1 */
+  --color-primary-hover:#1B2438;
+  --color-on-primary:#FFFFFF;
+  --color-focus:#2F6FEB;         /* focus ring — 4.57:1 on white */
+
+  /* ---- Sale accent (only for sale elements: −50% tag, sale price emphasis) --- */
+  --color-sale:#C8102E;          /* white on it 5.88:1; on white 5.88:1; on exam-50 ≥5.40:1 */
+  --color-on-sale:#FFFFFF;
+  --color-sale-on-dark:#F4C7C1;  /* star / accent text on navy sale bar — 8.42:1. NEVER #C8102E on dark (2.69:1 FAIL) */
+
+  /* ---- Status ------------------------------------------------------------ */
+  --color-success:#2E7D5B;  --color-success-50:#EDF7F1;   /* 5.00 / 4.56 */
+  --color-warn:#8A4B00;     --color-warn-50:#FFF4E0;      /* 6.80 / 6.24 — low-time timer */
+  --color-warn-dot:#C77700;                                /* flagged-question dot (UI 3.46) */
+  --color-danger:#B42318;   --color-danger-50:#FEF1F0;    /* 6.57 / 5.97 — errors, <1 min timer */
+
+  /* ---- Exam scales (pale tints; 700 = text/CTA on light, 500 = decor only) --- */
+  --ielts-50:#FDF3F2; --ielts-100:#FBE4E1; --ielts-200:#F4C7C1; --ielts-500:#D9695C; --ielts-700:#A3312A;
+  --toefl-50:#F8F5FD; --toefl-100:#EFE8FB; --toefl-200:#DCCFF4; --toefl-500:#9878D6; --toefl-700:#5C3D9E;
+  --sat-50:#F2F7FD;   --sat-100:#E2EDFB;   --sat-200:#C4DAF4;   --sat-500:#5A8ED3;   --sat-700:#1F579F;
+
+  /* ---- Active exam (neutral default; overridden by [data-exam]) ----------- */
+  --exam-50:var(--color-canvas);
+  --exam-100:#EDF0F4;
+  --exam-200:var(--color-line);
+  --exam-500:var(--color-control);
+  --exam-700:var(--color-primary);
+  --exam-on-700:#FFFFFF;
+
+  /* ---- Typography -------------------------------------------------------- */
+  --font-sans:"Noto Sans",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+  --fw-regular:400;
+  --fw-semibold:600;              /* the ONLY two weights. No 700/800 anywhere. */
+  --fs-12:0.75rem;   /* overline / meta labels (uppercase, letter-spacing .06em) */
+  --fs-14:0.875rem;  /* small UI, captions, chips */
+  --fs-16:1rem;      /* body, buttons, inputs */
+  --fs-18:1.125rem;  /* reading passages, lead text, timer */
+  --fs-20:1.25rem;   /* h3 */
+  --fs-24:1.5rem;    /* h2 mobile */
+  --fs-28:1.75rem;   /* h1 mobile / h2 desktop */
+  --fs-36:2.25rem;   /* landing h1 mobile, exam h1 desktop */
+  --fs-52:3.25rem;   /* landing h1 desktop only */
+  --lh-tight:1.15;   /* headings ≥ 28px */
+  --lh-snug:1.3;     /* h3, card titles */
+  --lh-body:1.5;     /* body 16/1.5 */
+  --lh-reading:1.6;  /* passages 18/1.6, guides */
+  --ls-heading:-0.015em;
+  --ls-overline:0.06em;
+  --measure:68ch;    /* max reading line length */
+
+  /* ---- Spacing (4-point; only these values) ------------------------------ */
+  --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px;
+  --space-5:24px; --space-6:32px; --space-7:48px; --space-8:64px; /* 64 = landing section gap only */
+
+  /* ---- Radius ------------------------------------------------------------ */
+  --radius-control:8px;   /* buttons, inputs, chips-square, options */
+  --radius-card:12px;     /* cards, panels, test rows */
+  --radius-sheet:16px;    /* dialogs, bottom sheets, phone previews */
+  --radius-pill:999px;    /* badges, segmented toggles */
+
+  /* ---- Elevation: shadows ONLY on dialogs/sheets/popovers ---------------- */
+  --shadow-dialog:0 8px 24px rgb(38 50 74 / .12);
+  --ring-card:inset 0 0 0 1px var(--color-line);     /* cards use a ring, not a shadow */
+  --ring-control:inset 0 0 0 1px var(--color-control);
+  --focus-ring:0 0 0 2px var(--color-surface),0 0 0 4px var(--color-focus);
+
+  /* ---- Layout ------------------------------------------------------------ */
+  --content-max:1120px;
+  --reading-max:720px;      /* guide column (680–760) */
+  --toc-width:220px;
+  --header-h:64px;
+  --header-h-mobile:56px;
+  --salebar-h:40px;
+  --testbar-h:56px;
+  --touch:48px;             /* min touch target */
+  --gutter:16px;            /* mobile page padding; 24px ≥768, 32px ≥1120 */
+
+  /* ---- Motion ------------------------------------------------------------ */
+  --dur-fast:120ms;         /* hover, press */
+  --dur-base:200ms;         /* accordions, tabs, toggles */
+  --dur-slow:320ms;         /* sheets, dialogs */
+  --ease-out:cubic-bezier(.2,.8,.2,1);
+  --ease-in-out:cubic-bezier(.4,0,.2,1);
+
+  /* ---- Z-index ----------------------------------------------------------- */
+  --z-header:20; --z-salebar:21; --z-sticky-cta:30; --z-sheet:40; --z-dialog:50; --z-toast:60;
+}
+
+/* ---- Exam theming: put data-exam on the route root (see spec §1.4) -------- */
+[data-exam="ielts"]{--exam-50:var(--ielts-50);--exam-100:var(--ielts-100);--exam-200:var(--ielts-200);--exam-500:var(--ielts-500);--exam-700:var(--ielts-700)}
+[data-exam="toefl"]{--exam-50:var(--toefl-50);--exam-100:var(--toefl-100);--exam-200:var(--toefl-200);--exam-500:var(--toefl-500);--exam-700:var(--toefl-700)}
+[data-exam="sat"]  {--exam-50:var(--sat-50);  --exam-100:var(--sat-100);  --exam-200:var(--sat-200);  --exam-500:var(--sat-500);  --exam-700:var(--sat-700)}
+
+@media (min-width:768px){ :root{--gutter:24px} }
+@media (min-width:1120px){ :root{--gutter:32px} }
+
+/* ---- Reduced motion: kill non-essential animation globally --------------- */
+@media (prefers-reduced-motion: reduce){
+  :root{--dur-fast:0ms;--dur-base:0ms;--dur-slow:0ms}
+  *,*::before,*::after{animation-duration:.01ms !important;animation-iteration-count:1 !important;
+    transition-duration:.01ms !important;scroll-behavior:auto !important}
+}
+
+/* ---- Base --------------------------------------------------------------- */
+html{-webkit-text-size-adjust:100%}
+body{margin:0;font-family:var(--font-sans);font-size:var(--fs-16);line-height:var(--lh-body);
+  font-weight:var(--fw-regular);color:var(--color-ink);background:var(--color-canvas);
+  -webkit-font-smoothing:antialiased}
+h1,h2,h3{font-weight:var(--fw-semibold);letter-spacing:var(--ls-heading);line-height:var(--lh-tight);text-wrap:balance;margin:0}
+h3{line-height:var(--lh-snug)}
+:focus-visible{outline:none;box-shadow:var(--focus-ring);border-radius:var(--radius-control)}
+.tnum{font-variant-numeric:tabular-nums}
+.overline{font-size:var(--fs-12);font-weight:var(--fw-semibold);letter-spacing:var(--ls-overline);text-transform:uppercase;color:var(--color-muted)}
+.visually-hidden{position:absolute!important;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}

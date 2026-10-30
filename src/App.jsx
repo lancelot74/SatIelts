@@ -17,7 +17,8 @@ import {
   useSearchParams,
 } from "react-router-dom";
 import { Landing, SaleBar } from "./Landing.jsx";
-import { planCode } from "./config/pricing.js";
+import { Checkout } from "./Checkout.jsx";
+import { formatTugrik, offer, planCode } from "./config/pricing.js";
 import {
   ArrowRight,
   ArrowUpRight,
@@ -509,7 +510,7 @@ function ExamPage() {
             <p>{mode.id === "full" ? t.fullScope : t.sectionDetail}</p>
             {(mode.id === "listening" ||
               (mode.id === "full" && id !== "sat")) && (
-              <p>{t.transcriptNotice}</p>
+              <p>{t.deviceListen}</p>
             )}
           </div>
           <div className="library-layout">
@@ -614,7 +615,10 @@ function ExamPage() {
             <div className="section-heading">
               <div>
                 <h2>{t.fullLength}</h2>
-                <p>{t.fullLengthText}</p>
+                <p>
+                  {bookMode.tests.length} {t.fullCount}
+                  {id !== "sat" ? ` ${t.deviceListen}` : ""}
+                </p>
               </div>
             </div>
             <div className="practice-modes" role="group" aria-label={t.fullLength}>
@@ -744,14 +748,14 @@ function Locked({ exam, number = "reading-1" }) {
               </div>
             </div>
           ) : session.user ? (
-            <button disabled={busy} onClick={ask} className="button">
-              {busy ? t.loading : t.request}
+            <Link className="button" to="/checkout?plan=month&group=1">
+              {t.getAccess}
               <ArrowRight size={17} />
-            </button>
+            </Link>
           ) : (
             <Link
               className="button"
-              to={`/login?next=/${exam.id}/tests/${number}&plan=month&group=1`}
+              to={`/login?next=${encodeURIComponent("/checkout?plan=month&group=1")}`}
             >
               {t.google}
               <ArrowUpRight size={17} />
@@ -1280,20 +1284,12 @@ function Player({ initial, exam, onFinish }) {
       <div
         className={`player-workspace ${question.passage ? "has-passage" : ""}`}
       >
-        {question.passage && (
+        {question.passage && question.section !== "Listening" && (
           <section className="passage-panel">
             <div className="eyebrow">
               <BookOpen size={15} />
-              {question.section === "Listening" ? t.transcript : t.passage}
+              {t.passage}
             </div>
-            {question.section === "Listening" && (
-              <PracticeAudio
-                src={question.audio}
-                text={question.passage}
-                t={t}
-                disabled={busy || seconds === 0}
-              />
-            )}
             <Passage text={question.passage} />
             {help && mnCopy(question.passageMn) && (
               <div className="help-sheet" lang="mn">
@@ -1301,6 +1297,17 @@ function Player({ initial, exam, onFinish }) {
                 <p className="help-passage">{mnCopy(question.passageMn)}</p>
               </div>
             )}
+          </section>
+        )}
+        {question.section === "Listening" && (question.passage || question.audio) && (
+          <section className="passage-panel listening-player">
+            <PracticeAudio
+              src={question.audio}
+              text={question.passage || question.speechText}
+              t={t}
+              disabled={busy || seconds === 0}
+            />
+            <p className="notice">{t.transcriptLater}</p>
           </section>
         )}
         <section className="question-panel">
@@ -1600,9 +1607,47 @@ function Passage({ text }) {
     </div>
   );
 }
+function suggestedNext(catalog, examId, number) {
+  const entry = catalog?.find((item) => item.id === examId);
+  if (!entry) return null;
+  for (const mode of [...(entry.modes || []), ...(entry.books || [])]) {
+    const list = [mode.sample, ...(mode.tests || [])].filter(Boolean);
+    const index = list.findIndex(
+      (item) => String(item.number) === String(number),
+    );
+    if (index >= 0 && list[index + 1]) return list[index + 1];
+  }
+  return null;
+}
+function cleanGuideText(text) {
+  const out = [];
+  for (const raw of String(text || "").replace(/\r/g, "").split("\n")) {
+    const line = raw.trim();
+    if (!line) {
+      if (out.at(-1) !== "") out.push("");
+      continue;
+    }
+    if (/гарын авлага/i.test(line) && line.length < 90) continue;
+    if (/^\d{1,3}$/.test(line)) continue;
+    const prev = out.at(-1);
+    const join =
+      prev &&
+      prev.length > 48 &&
+      !/[.?!…:]$/.test(prev) &&
+      !/^[-•–]/.test(line) &&
+      !/^\d+[\).]/.test(line);
+    if (join) out[out.length - 1] = `${prev} ${line}`;
+    else out.push(line);
+  }
+  return out.join("\n");
+}
 function Results({ result, exam, onRetake }) {
-  const { t, tr, lang, session } = useApp();
+  const { t, tr, lang, session, catalog } = useApp();
   const [showMn, setShowMn] = useState(false);
+  const next = suggestedNext(catalog, exam.id, result.number);
+  const unlocked =
+    session.user?.isAdmin || session.grants?.includes(exam.id);
+  const prices = offer();
   function display(q, value) {
     if (value === "" || value === undefined) return t.notAnswered;
     if (q.options)
@@ -1715,6 +1760,48 @@ function Results({ result, exam, onRetake }) {
         <CheckCircle2 size={16} />
         {session.user ? t.historySaved : t.guestResult}
       </p>
+      <div className="results-follow">
+        {next && (
+          <article className="price-card">
+            <h2>{t.nextTest}</h2>
+            <p>
+              {next.minutes} {t.minutes} · {next.count} {t.questions}
+            </p>
+            <Link
+              className="button"
+              to={
+                String(next.number).includes("sample") || unlocked
+                  ? `/${exam.id}/tests/${next.number}`
+                  : `/login?plan=month&group=1&next=/${exam.id}/tests/${next.number}`
+              }
+            >
+              {String(next.number).includes("sample") || unlocked
+                ? t.openNext
+                : t.getAccess}
+              <ArrowRight size={16} />
+            </Link>
+          </article>
+        )}
+        {!unlocked && (
+          <article className="price-card featured">
+            <h2>{t.offerTitle}</h2>
+            <p>
+              {t.planWeek}{" "}
+              {prices.sale && <s>{formatTugrik(prices.solo.week.list)}</s>}{" "}
+              <strong>{formatTugrik(prices.solo.week.price)}</strong>
+              {" · "}
+              {t.planMonth}{" "}
+              {prices.sale && <s>{formatTugrik(prices.solo.month.list)}</s>}{" "}
+              <strong>{formatTugrik(prices.solo.month.price)}</strong>
+            </p>
+            <p className="fine">{t.onePlan}</p>
+            <Link className="button" to="/checkout?plan=month&group=1">
+              {t.getAccess}
+              <ArrowRight size={16} />
+            </Link>
+          </article>
+        )}
+      </div>
       <div className="section-heading">
         <h2>{t.reviewAnswers}</h2>
         <button
@@ -1773,6 +1860,12 @@ function Results({ result, exam, onRetake }) {
                   </p>
                 )}
               </div>
+              {q.transcript && (
+                <details className="review-transcript">
+                  <summary>{t.transcript}</summary>
+                  <p lang="en">{q.transcript}</p>
+                </details>
+              )}
               {q.kind === "speaking" && (
                 <VoiceResponse
                   storageKey={`${result.runId}:${q.id}`}
@@ -1887,7 +1980,7 @@ function Guide() {
             </div>
           </div>
           <div className="lesson-original" lang="mn">
-            {lesson.body}
+            {cleanGuideText(lesson.body)}
           </div>
           <p className="fine">
             {t.source}: {data.source} · {lesson.pages} {t.pages}
@@ -1949,6 +2042,15 @@ function Account() {
   const pendingAll = session.requests.some(
     (r) => r.exam === "all" && r.status === "pending",
   );
+  useEffect(() => {
+    const plan = params.get("plan");
+    if (plan === "week" || plan === "month") {
+      navigate(
+        `/checkout?plan=${plan}&group=${params.get("group") === "3" ? "3" : "1"}`,
+        { replace: true },
+      );
+    }
+  }, [params, navigate]);
   async function logout() {
     try {
       await api("/api/logout");
@@ -2135,6 +2237,57 @@ function AdminPanel() {
       <p className="eyebrow">STUDYROOM / ADMIN</p>
       <h1>{t.manageTitle}</h1>
       <p className="page-description">{t.manageText}</p>
+      {data?.orders?.some((order) => order.status === "awaiting_payment") && (
+        <section>
+          <h2>{t.waitingPayment}</h2>
+          {data.orders
+            .filter((order) => order.status === "awaiting_payment")
+            .map((order) => (
+              <div className="admin-row" key={order.code}>
+                <div>
+                  <strong>{order.code}</strong>
+                  <small>
+                    {order.email} · {order.plan} · {order.group_size} ·{" "}
+                    {order.amount_mnt}
+                  </small>
+                </div>
+                <button
+                  className="button small"
+                  disabled={busy}
+                  onClick={async () => {
+                    const note = window.prompt(t.approveNote);
+                    if (!note || note.trim().length < 3) return;
+                    setBusy(true);
+                    try {
+                      await api("/api/admin/orders/approve", {
+                        code: order.code,
+                        note: note.trim(),
+                      });
+                      await refresh();
+                      reload();
+                    } catch (e) {
+                      setActionError(e);
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                >
+                  {t.confirmPayment}
+                </button>
+                {order.status === "paid" && (
+                  <button
+                    className="button small secondary"
+                    onClick={() =>
+                      setRevoke({ user_id: order.user_id, exam: "all" })
+                    }
+                  >
+                    {t.revoke}
+                  </button>
+                )}
+              </div>
+            ))}
+        </section>
+      )}
       {actionError && <ErrorState error={actionError} />}
       <h2>{t.requests}</h2>
       {error ? (
@@ -2267,6 +2420,8 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/login" element={<Login />} />
+          <Route path="/checkout" element={<Checkout />} />
+          <Route path="/checkout/:code" element={<Checkout />} />
           <Route path="/account" element={<Account />} />
           <Route path="/admin" element={<Admin />} />
           <Route path="/results/:id" element={<SavedResult />} />

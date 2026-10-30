@@ -1,0 +1,50 @@
+/* ==========================================================================
+   Eight Steppe Academy — landing background: Option 1 "Horizon band" (chosen)
+   Copy to src/styles/backgrounds.css. Requires tokens.css (uses --color-surface).
+   Usage (landing page "/" ONLY, on the hero section):
+     <section class="hero bg-horizon"> … copy + product preview … </section>
+   Static (no animation) → nothing to disable for prefers-reduced-motion.
+   The rgba values below are the exact ones in the approved render
+   (options/bg-1-horizon.png); they are the exam 200-level tints at 50–58% alpha.
+   ========================================================================== */
+.bg-horizon{
+  position:relative;
+  isolation:isolate;                 /* keeps the z-index:-1 band inside this section */
+  background:var(--color-surface,#FFFFFF);
+  overflow:hidden;                   /* clip the skewed band's corners */
+}
+.bg-horizon::before{
+  content:"";
+  position:absolute; z-index:-1; pointer-events:none;
+  left:-5%; right:-5%;
+  top:30%; height:min(440px,62%);   /* band sits behind the product preview / lower half of hero copy */
+  transform:skewY(-4deg);
+  /* fallback for browsers without gradient interpolation spaces */
+  background:linear-gradient(110deg,
+      rgb(242 181 176 / .55) 0%,     /* IELTS pale red    */
+      rgb(206 185 236 / .50) 50%,    /* TOEFL pale purple */
+      rgb(181 211 238 / .58) 100%);  /* SAT pale blue     */
+  background:linear-gradient(110deg in oklab,
+      rgb(242 181 176 / .55) 0%,
+      rgb(206 185 236 / .50) 50%,
+      rgb(181 211 238 / .58) 100%);
+  /* fade to white above and below — no hard edges */
+  -webkit-mask-image:linear-gradient(to bottom,transparent 0%,#000 32%,#000 68%,transparent 100%);
+          mask-image:linear-gradient(to bottom,transparent 0%,#000 32%,#000 68%,transparent 100%);
+}
+
+/* Tablet: hero stacks (copy above preview) — move band down behind the preview */
+@media (max-width:1023px){
+  .bg-horizon::before{top:40%;height:min(420px,50%)}
+}
+/* Mobile (≤640px): lower, thinner, steeper band behind the phone preview,
+   so it never sits under the H1 / CTAs. */
+@media (max-width:640px){
+  .bg-horizon::before{top:44%;height:42%;transform:skewY(-6deg)}
+}
+/* Windows High Contrast / forced colors: drop the decoration */
+@media (forced-colors:active){
+  .bg-horizon::before{display:none}
+}
+/* Print: drop it */
+@media print{ .bg-horizon::before{display:none} }
