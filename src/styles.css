@@ -4568,6 +4568,16 @@ textarea:focus-visible {
 .landing .exam-card {
   padding-bottom: 20px;
 }
+.landing .exam-card .button {
+  width: 100%;
+  background: var(--tint);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, white);
+}
+.landing .exam-card .button:hover:not(:disabled) {
+  background: var(--art);
+  color: var(--accent);
+}
 .landing .button {
   background: #c8102e;
   border-color: #9d0c24;
