@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { offer, planCode, saleActive, SALE_END } from "../src/config/pricing.js";
 
 test("sale prices stack and then return to the friends rate", () => {
-  const during = offer(Date.parse("2026-11-08T23:00:00+08:00"));
+  const during = offer(Date.parse("2026-11-11T23:00:00+08:00"));
   assert.equal(during.sale, true);
   assert.equal(during.solo.week.price, 3500);
   assert.equal(during.solo.month.price, 10000);
