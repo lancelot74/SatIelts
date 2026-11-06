@@ -99,17 +99,25 @@ function testLabel(number, t, examId) {
 const Context = createContext(null);
 export const useApp = () => useContext(Context);
 async function request(url, options = {}) {
-  const response = await fetch(url, {
-    ...options,
-    headers: { "Content-Type": "application/json", ...options.headers },
-  });
-  const value = await response.json();
-  if (!response.ok) {
-    const e = new Error(value.error || "server_error");
-    e.status = response.status;
-    throw e;
+  const headers = { ...options.headers };
+  if (options.body != null) headers["Content-Type"] = "application/json";
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const response = await fetch(url, { ...options, headers });
+      const value = await response.json();
+      if (!response.ok) {
+        const error = new Error(value.error || "server_error");
+        error.status = response.status;
+        throw error;
+      }
+      return value;
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
+    }
   }
-  return value;
+  throw lastError;
 }
 function useResource(url) {
   const [data, setData] = useState(null),

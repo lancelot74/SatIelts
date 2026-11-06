@@ -224,9 +224,10 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
       next(error);
     }
   });
-  app.get("/api/catalog", (_req, res) =>
-    res.json(
-      exams.map(({ guide, ...e }) => ({
+  let catalogPayload;
+  function catalog() {
+    if (catalogPayload) return catalogPayload;
+    catalogPayload = exams.map(({ guide, ...e }) => ({
         ...e,
         count: 5,
         topics: e.topics.slice(0, 5),
@@ -258,9 +259,12 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
             ),
           ),
         })),
-      })),
-    ),
-  );
+      }));
+    return catalogPayload;
+  }
+  app.get("/api/catalog", (_req, res) => {
+    res.json(catalog());
+  });
   app.get(
     "/api/auth/google",
     rateLimit({ windowMs: 15 * 60 * 1000, limit: 30 }),

@@ -179,6 +179,18 @@ export async function openPostgres(connectionString) {
   };
   for (const statement of sqlStatements(paymentTables))
     await sql.unsafe(statement);
+  for (const table of ["orders", "entitlements"]) {
+    await sql.unsafe(`CREATE SEQUENCE IF NOT EXISTS ${table}_id_seq`);
+    await sql.unsafe(
+      `ALTER TABLE ${table} ALTER COLUMN id SET DEFAULT nextval('${table}_id_seq')`,
+    );
+    await sql.unsafe(
+      `ALTER SEQUENCE ${table}_id_seq OWNED BY ${table}.id`,
+    );
+    await sql.unsafe(
+      `SELECT setval('${table}_id_seq', GREATEST(COALESCE((SELECT MAX(id) FROM ${table}), 0), 1))`,
+    );
+  }
   await migrateLegacyGrants(api);
   return api;
 }
