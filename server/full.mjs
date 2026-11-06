@@ -65,6 +65,16 @@ for (const book of books) {
   };
 }
 
+export function fullSetNumbers(exam) {
+  return Object.keys(fullVariants)
+    .map((key) => {
+      const match = key.match(new RegExp(`^${exam}-length-(\\d+)$`));
+      return match ? Number(match[1]) : null;
+    })
+    .filter((number) => number != null)
+    .sort((a, b) => a - b);
+}
+
 export function fullModes(exam) {
   return fullModeIds[exam].map((id) => ({ id, label: modeLabel[id] }));
 }

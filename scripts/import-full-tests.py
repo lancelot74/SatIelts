@@ -9,19 +9,31 @@ OUT = ROOT / "content" / "full-length.json"
 NOTE = "Энэ шинэ сорилын асуулт англи хэл дээр."
 
 ZIPS = {
-    "sat": [DOWNLOADS / "SAT_Practice_Tests_01-10.zip"],
+    "sat": [
+        DOWNLOADS / "SAT_Practice_Tests_01-10.zip",
+        DOWNLOADS / "SAT_Practice_Tests_11-20.zip",
+    ],
     "ielts": [
-        DOWNLOADS / "IELTS_Part1_of_4_Tests01-03.zip",
-        DOWNLOADS / "IELTS_Part2_of_4_Tests04-06.zip",
-        DOWNLOADS / "IELTS_Part3_of_4_Tests07-09.zip",
-        DOWNLOADS / "IELTS_Part4_of_4_Tests10-10.zip",
+        DOWNLOADS / "IELTS_Part1_of_4_Tests01-03(1).zip",
+        DOWNLOADS / "IELTS_Part2_of_4_Tests04-06(1).zip",
+        DOWNLOADS / "IELTS_Part3_of_4_Tests07-09(1).zip",
+        DOWNLOADS / "IELTS_Part4_of_4_Tests10-10(1).zip",
+        DOWNLOADS / "IELTS_Part1_of_4_Tests11-13.zip",
+        DOWNLOADS / "IELTS_Part2_of_4_Tests14-16.zip",
+        DOWNLOADS / "IELTS_Part3_of_4_Tests17-19.zip",
+        DOWNLOADS / "IELTS_Part4_of_4_Tests20-20.zip",
     ],
     "toefl": [
-        DOWNLOADS / "TOEFL_Part1_of_5_Tests01-02.zip",
-        DOWNLOADS / "TOEFL_Part2_of_5_Tests03-04.zip",
-        DOWNLOADS / "TOEFL_Part3_of_5_Tests05-06.zip",
-        DOWNLOADS / "TOEFL_Part4_of_5_Tests07-08.zip",
-        DOWNLOADS / "TOEFL_Part5_of_5_Tests09-10.zip",
+        DOWNLOADS / "TOEFL_Part1_of_5_Tests01-02(1).zip",
+        DOWNLOADS / "TOEFL_Part2_of_5_Tests03-04(1).zip",
+        DOWNLOADS / "TOEFL_Part3_of_5_Tests05-06(1).zip",
+        DOWNLOADS / "TOEFL_Part4_of_5_Tests07-08(1).zip",
+        DOWNLOADS / "TOEFL_Part5_of_5_Tests09-10(1).zip",
+        DOWNLOADS / "TOEFL_Part1_of_5_Tests11-12.zip",
+        DOWNLOADS / "TOEFL_Part2_of_5_Tests13-14.zip",
+        DOWNLOADS / "TOEFL_Part3_of_5_Tests15-16.zip",
+        DOWNLOADS / "TOEFL_Part4_of_5_Tests17-18.zip",
+        DOWNLOADS / "TOEFL_Part5_of_5_Tests19-20.zip",
     ],
 }
 
@@ -283,7 +295,7 @@ def extract_tree(work):
 
 def sat_tests(root):
     tests = []
-    for number in range(1, 11):
+    for number in range(1, 21):
         folder = root / "sat" / f"Test{number:02d}"
         booklet = text_of(next(folder.glob("*Student_Booklet.pdf")))
         key = parse_answers(text_of(next(folder.glob("*Answer_Key.pdf"))))
@@ -306,7 +318,7 @@ def sat_tests(root):
 
 def ielts_tests(root):
     tests = []
-    for number in range(1, 11):
+    for number in range(1, 21):
         folder = root / "ielts" / f"Test{number:02d}"
         booklet = text_of(next(folder.glob("*Student_Booklet.pdf")))
         key = parse_answers(text_of(next(folder.glob("*Answer_Key.pdf"))))
@@ -345,7 +357,7 @@ def ielts_tests(root):
 
 def toefl_tests(root):
     tests = []
-    for number in range(1, 11):
+    for number in range(1, 21):
         folder = root / "toefl" / f"Test{number:02d}"
         booklet = text_of(next(folder.glob("*Student_Booklet.pdf")))
         key = parse_answers(text_of(next(folder.glob("*Answer_Key.pdf"))))

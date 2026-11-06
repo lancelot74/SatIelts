@@ -21,7 +21,7 @@ import {
   practiceModes,
   testSummary,
 } from "./tests.mjs";
-import { fullModes, fullVariants } from "./full.mjs";
+import { fullModes, fullSetNumbers, fullVariants } from "./full.mjs";
 import { createOrder, activateOrder, activeEntitlement, linkFriendEntitlements } from "./orders.mjs";
 const CANONICAL_ORIGIN = "https://eightsteppe.org";
 const ALIAS_HOSTS = new Set([
@@ -250,10 +250,10 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
         books: fullModes(e.id).map((mode) => ({
           id: mode.id,
           label: mode.label,
-          tests: Array.from({ length: 10 }, (_, i) =>
+          tests: fullSetNumbers(e.id).map((number) =>
             testSummary(
               fullVariants[
-                `${e.id}-${mode.id === "length" ? `length-${i + 1}` : `length-${mode.id}-${i + 1}`}`
+                `${e.id}-${mode.id === "length" ? `length-${number}` : `length-${mode.id}-${number}`}`
               ],
             ),
           ),
