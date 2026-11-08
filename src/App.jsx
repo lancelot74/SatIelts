@@ -17,6 +17,7 @@ import {
   useSearchParams,
 } from "react-router-dom";
 import { Landing, SaleBar } from "./Landing.jsx";
+import { request } from "./request.js";
 import { Checkout } from "./Checkout.jsx";
 import { formatTugrik, offer, planCode } from "./config/pricing.js";
 import {
@@ -98,27 +99,6 @@ function testLabel(number, t, examId) {
 }
 const Context = createContext(null);
 export const useApp = () => useContext(Context);
-async function request(url, options = {}) {
-  const headers = { ...options.headers };
-  if (options.body != null) headers["Content-Type"] = "application/json";
-  let lastError;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
-      const response = await fetch(url, { ...options, headers });
-      const value = await response.json();
-      if (!response.ok) {
-        const error = new Error(value.error || "server_error");
-        error.status = response.status;
-        throw error;
-      }
-      return value;
-    } catch (error) {
-      lastError = error;
-      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
-    }
-  }
-  throw lastError;
-}
 function useResource(url) {
   const [data, setData] = useState(null),
     [error, setError] = useState(null),

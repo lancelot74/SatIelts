@@ -103,6 +103,35 @@ function wrapSqlite(raw) {
   };
 }
 
+const millisColumns = {
+  entitlements: ["starts_at", "ends_at", "created_at"],
+  orders: ["created_at", "expires_at", "paid_at"],
+};
+
+// Postgres INTEGER is int4. These columns store Date.now() milliseconds.
+// SQLite INTEGER is already 64-bit, so only the Postgres boot path widens them.
+export async function widenMillis(sql, table, columns) {
+  const allowed = millisColumns[table];
+  if (!allowed || columns.some((column) => !allowed.includes(column)))
+    throw new Error("Refusing to alter an unknown column");
+  const found = await sql`
+    select column_name, data_type
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = ${table}
+      and column_name in ${sql(columns)}
+  `;
+  const narrow = found
+    .filter((row) => row.data_type === "integer")
+    .map((row) => row.column_name);
+  if (!narrow.length) return;
+  await sql.unsafe(
+    `ALTER TABLE ${table} ${narrow
+      .map((column) => `ALTER COLUMN ${column} TYPE bigint`)
+      .join(", ")}`,
+  );
+}
+
 function queryApi(executor) {
   return {
     async get(sql, params = []) {
@@ -161,11 +190,22 @@ export async function openPostgres(connectionString) {
   const api = {
     dialect: "postgres",
     ...queryApi(sql),
-    transaction: (fn) => sql.begin(async (tx) => fn(queryApi(tx))),
+    // set_config(..., true) is LOCAL to this transaction, so it stays on the
+    // one pooler server connection and cannot leak into the next checkout.
+    // A stuck FOR UPDATE then fails instead of holding the only client forever.
+    transaction: (fn) =>
+      sql.begin(async (tx) => {
+        await tx.unsafe(
+          "select set_config('lock_timeout', '2000', true), set_config('statement_timeout', '8000', true)",
+        );
+        return fn(queryApi(tx));
+      }),
     close: () => sql.end({ timeout: 5 }),
   };
   for (const statement of sqlStatements(paymentTables))
     await sql.unsafe(statement);
+  await widenMillis(sql, "entitlements", ["starts_at", "ends_at", "created_at"]);
+  await widenMillis(sql, "orders", ["created_at", "expires_at", "paid_at"]);
   for (const statement of sqlStatements(smsTables))
     await sql.unsafe(statement);
   for (const statement of sqlStatements(sessionTables))

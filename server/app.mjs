@@ -365,33 +365,33 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
         profile.sub,
       ]);
       await linkFriendEntitlements(db, user, now());
-      req.session.regenerate((err) => {
-        if (err) return res.redirect("/login?error=sign_in_failed");
-        req.session.userId = user.id;
-        req.session.csrf = random();
-        openLogin(db, {
-          sid: req.sessionID,
-          userId: user.id,
-          now: now(),
-          label: deviceLabel(req.get("user-agent")),
-          network: coarseNetwork(req.ip),
-        })
-          .then(() =>
-            req.session.save((error) => {
-          if (error) return res.redirect("/login?error=sign_in_failed");
-          const checkout = `/checkout?plan=${pending.plan}&group=${pending.group === "3" ? "3" : "1"}`;
-          const target = String(pending.next || "").startsWith("/checkout")
-            ? pending.next
-            : pending.plan
-              ? checkout
-              : pending.next;
-          res.redirect(target);
-            }),
-          )
-          .catch(() => res.redirect("/login?error=sign_in_failed"));
+      await new Promise((resolve, reject) => {
+        req.session.regenerate((err) => {
+          if (err) return reject(err);
+          req.session.userId = user.id;
+          req.session.csrf = random();
+          openLogin(db, {
+            sid: req.sessionID,
+            userId: user.id,
+            now: now(),
+            label: deviceLabel(req.get("user-agent")),
+            network: coarseNetwork(req.ip),
+          })
+            .then(() => {
+              req.session.save((error) => (error ? reject(error) : resolve()));
+            })
+            .catch(reject);
+        });
       });
+      const checkout = `/checkout?plan=${pending.plan}&group=${pending.group === "3" ? "3" : "1"}`;
+      const target = String(pending.next || "").startsWith("/checkout")
+        ? pending.next
+        : pending.plan
+          ? checkout
+          : pending.next;
+      res.redirect(target);
     } catch {
-      res.redirect("/login?error=sign_in_failed");
+      if (!res.headersSent) res.redirect("/login?error=sign_in_failed");
     }
   });
   app.post("/api/logout", (req, res) => {
@@ -913,7 +913,7 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
         return res.status(400).json({ ok: false, error: "invalid_body" });
       return res.status(400).json({ error: "invalid_json" });
     }
-    console.error("Request failed:", err.name);
+    console.error("Request failed:", err.name, err.code || "");
     res.status(500).json({ error: "server_error" });
   });
   return app;
