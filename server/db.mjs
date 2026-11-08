@@ -45,7 +45,7 @@ export function openDatabase(path) {
   if (!audit.some((column) => column.name === "detail"))
     raw.exec("ALTER TABLE audit ADD COLUMN detail TEXT");
   raw
-    .prepare("DELETE FROM entitlements WHERE user_id IS NULL AND created_at<?")
+    .prepare("DELETE FROM entitlements WHERE user_id IS NULL AND CAST(created_at AS bigint)<?")
     .run(Date.now() - 30 * 86400000);
   return wrapSqlite(raw);
 }

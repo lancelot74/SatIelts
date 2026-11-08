@@ -48,7 +48,7 @@ export async function activeEntitlement(db, user, now) {
      WHERE starts_at<=? AND ends_at>?
        AND (
          user_id=?
-         OR (user_id IS NULL AND lower(email)=? AND created_at>=?)
+         OR (user_id IS NULL AND lower(email)=? AND CAST(created_at AS bigint)>=?)
        )
      ORDER BY ends_at DESC`,
     [now, now, user.id, String(user.email).toLowerCase(), now - 30 * DAY],
@@ -59,14 +59,14 @@ const INVITE_MS = 30 * DAY;
 
 export async function linkFriendEntitlements(db, user, now = Date.now()) {
   await db.run(
-    "UPDATE entitlements SET user_id=? WHERE user_id IS NULL AND lower(email)=? AND created_at>=?",
+    "UPDATE entitlements SET user_id=? WHERE user_id IS NULL AND lower(email)=? AND CAST(created_at AS bigint)>=?",
     [user.id, String(user.email).toLowerCase(), now - INVITE_MS],
   );
 }
 
 export async function expireInvitations(db, now = Date.now()) {
   await db.run(
-    "DELETE FROM entitlements WHERE user_id IS NULL AND created_at<?",
+    "DELETE FROM entitlements WHERE user_id IS NULL AND CAST(created_at AS bigint)<?",
     [now - INVITE_MS],
   );
 }
