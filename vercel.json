@@ -29,7 +29,8 @@
   "regions": ["hnd1"],
   "functions": {
     "api/index.mjs": {
-      "includeFiles": "content/*.json,server/schema.postgres.sql"
+      "includeFiles": "content/*.json,server/schema.postgres.sql",
+      "excludeFiles": "{public,private}/media/**"
     }
   }
 }
