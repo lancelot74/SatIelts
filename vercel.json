@@ -24,13 +24,12 @@
   ],
   "rewrites": [
     { "source": "/api/:path*", "destination": "/api?path=:path*" },
-    { "source": "/media/:path*", "destination": "/api/media/:path*" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ],
   "regions": ["hnd1"],
   "functions": {
     "api/index.mjs": {
-      "includeFiles": "content/*.json,server/schema.postgres.sql,private/media/**"
+      "includeFiles": "content/*.json,server/schema.postgres.sql"
     }
   }
 }

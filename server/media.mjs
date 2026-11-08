@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-const ROOT = path.resolve("private/media");
+const ROOT = path.resolve("public/media");
 
 export function mediaTarget(exam, set, file) {
   if (!/^(ielts|toefl|sat)$/.test(exam)) return null;

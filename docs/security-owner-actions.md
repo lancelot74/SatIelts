@@ -10,4 +10,4 @@ The application now enforces a timed entitlement, serves paid audio only after t
 - `lateGraceHours` is not a rule. There is no automatic late cutoff. An expired bank SMS stays unmatched for a manual decision.
 - Natural IELTS recordings were not generated or replaced.
 
-Paid listening files are streamed by the API with `Cache-Control: private, no-store`. They are no longer copied into the public site folder. The Vercel function is configured to include `private/media`. If that bundle is too large for the host, keep the files off the public CDN and move them to private object storage rather than putting them back under `public/`.
+The recordings are about 426 MB. Putting them inside the Vercel function made every API request fail, because a function cannot be that large. They are served as site files again so the page and the listening player can load. A later private store can gate them without bundling them into the function.

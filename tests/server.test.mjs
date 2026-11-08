@@ -88,8 +88,7 @@ test("hosted postgres uses portable timestamps, placeholders, and locked-down ta
   assert.equal(boot.includes("ENABLE ROW LEVEL SECURITY"), true);
   assert.equal(boot.includes("REVOKE ALL ON TABLE"), true);
   assert.equal(boot.includes("REVOKE ALL ON SEQUENCE orders_id_seq, entitlements_id_seq"), true);
-  assert.equal(fs.existsSync("public/media"), false);
-  assert.equal(fs.existsSync("private/media/ielts/01/listening-part1.mp3"), true);
+  assert.equal(fs.existsSync("public/media/ielts/01/listening-part1.mp3"), true);
 });
 test("health reports the open database", async () => {
   const body = (await fixture().agent().get("/api/health").expect(200)).body;
