@@ -1,4 +1,5 @@
 let app;
+// A failed boot stays failed for this process. The next request does not try again.
 let bootError;
 try {
   const loaded = await import("../server/boot.mjs");

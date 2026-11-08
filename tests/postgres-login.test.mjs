@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import supertest from "supertest";
 import postgres from "postgres";
+import signature from "cookie-signature";
 import {
   MILLIS_ADVISORY_LOCK,
   MILLIS_MIGRATION_ID,
@@ -11,37 +13,91 @@ import {
 } from "../server/db.mjs";
 import { createApp } from "../server/app.mjs";
 import { priceFor } from "../src/config/pricing.js";
-import { sessionHash } from "../server/sessions.mjs";
+import {
+  activateLogin,
+  cancelLoginRegistration,
+  registerLogin,
+  revokeOtherSessions,
+  sessionHash,
+  touchSession,
+} from "../server/sessions.mjs";
 
 const fixtureName = /^studyroom_login_[a-f0-9]{12}$/;
 
-function localServer(value) {
+function localParts(value) {
   const url = new URL(value);
   if (url.protocol !== "postgres:" && url.protocol !== "postgresql:")
     throw new Error("Postgres tests refuse a non-postgres URL");
   if (!["localhost", "127.0.0.1"].includes(url.hostname))
     throw new Error("Postgres tests refuse a non-local database");
-  return url;
+  if ([...url.searchParams.keys()].length)
+    throw new Error("Postgres tests refuse URL query parameters");
+  if (!url.username || !url.password)
+    throw new Error("Postgres tests refuse an incomplete login");
+  return {
+    host: url.hostname,
+    port: Number(url.port || 5432),
+    user: decodeURIComponent(url.username),
+    password: decodeURIComponent(url.password),
+  };
 }
 
-function fixtureTarget(base) {
-  const url = localServer(base);
+function optionsFor(parts, database) {
+  return {
+    host: parts.host,
+    port: parts.port,
+    user: parts.user,
+    password: parts.password,
+    database,
+    max: 1,
+    prepare: false,
+    ssl: false,
+    connect_timeout: 3,
+  };
+}
+
+function client(parts, database) {
+  return postgres(optionsFor(parts, database));
+}
+
+function ownedUrl(parts, database) {
+  const url = new URL("postgres://127.0.0.1");
+  url.hostname = parts.host;
+  url.port = String(parts.port);
+  url.username = parts.user;
+  url.password = parts.password;
+  url.pathname = `/${database}`;
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
+async function identified(parts, database) {
+  if (!fixtureName.test(database)) throw new Error(`refusing database ${database}`);
+  const sql = client(parts, database);
+  try {
+    const rows = await sql`select current_database() as name`;
+    if (rows[0].name !== database)
+      throw new Error(`connected to ${rows[0].name}, not ${database}`);
+    return sql;
+  } catch (error) {
+    await sql.end({ timeout: 1 }).catch(() => {});
+    throw error;
+  }
+}
+
+async function createOwned(admin, parts, created) {
   const name = `studyroom_login_${randomBytes(6).toString("hex")}`;
   if (!fixtureName.test(name)) throw new Error("refusing an unexpected fixture name");
-  const maintenance = new URL(url);
-  maintenance.pathname = "/postgres";
-  const app = new URL(url);
-  app.pathname = `/${name}`;
-  return { name, maintenance: maintenance.toString(), app: app.toString() };
+  await admin.unsafe(`create database ${name}`);
+  created.push(name);
+  const sql = await identified(parts, name);
+  return { name, sql };
 }
 
-function client(url) {
-  return postgres(url, { max: 1, prepare: false, ssl: false, connect_timeout: 3 });
-}
-
-async function dropFixture(maintenance, name) {
+async function dropFixture(parts, name) {
   if (!fixtureName.test(name)) throw new Error(`refusing to drop ${name}`);
-  const sql = client(maintenance);
+  const sql = client(parts, "postgres");
   try {
     const found = await sql`select datname from pg_database where datname = ${name}`;
     if (!found.length) return;
@@ -89,33 +145,51 @@ create table entitlements (
   created_at integer not null
 );`;
 
-test("postgres fixtures refuse a hosted database before connecting", () => {
+test("postgres fixtures refuse a hosted database and query parameters before connecting", () => {
   assert.throws(
-    () => fixtureTarget("postgres://user:secret@db.example.supabase.co:6543/postgres"),
+    () => localParts("postgres://user:secret@db.example.supabase.co:6543/postgres"),
     /non-local/,
+  );
+  assert.throws(
+    () => localParts("postgres://study:study@127.0.0.1:5432/postgres?database=postgres"),
+    /query parameters/,
   );
 });
 
 test("postgres login, migration, and session compensation", { timeout: 60000 }, async () => {
   const base = process.env.POSTGRES_TEST_URL || "postgres://study:study@127.0.0.1:5432/postgres";
-  const maintenanceUrl = new URL(localServer(base));
-  maintenanceUrl.pathname = "/postgres";
-  const admin = client(maintenanceUrl.toString());
+  const parts = localParts(base);
+  const admin = client(parts, "postgres");
   const created = [];
   const open = [];
+  const role = `study_boot_${randomBytes(6).toString("hex")}`;
+  const rolePassword = randomBytes(8).toString("hex");
+  let roleReady = false;
   try {
     await admin`select 1 as ok`;
-    await admin.unsafe(`
-      do $$ begin
-        create role study_boot login password 'study_boot' nosuperuser nocreatedb nocreaterole;
-      exception when duplicate_object then null;
-      end $$;
-    `);
+    const before = await admin`
+      select count(*)::int as n from pg_tables
+      where schemaname = 'public'
+        and tablename in ('users', 'orders', 'entitlements', 'schema_migrations')
+    `;
+    assert.throws(
+      () => localParts(`${ownedUrl(parts, "postgres")}?database=postgres`),
+      /query parameters/,
+    );
+    const after = await admin`
+      select count(*)::int as n from pg_tables
+      where schemaname = 'public'
+        and tablename in ('users', 'orders', 'entitlements', 'schema_migrations')
+    `;
+    assert.equal(before[0].n, after[0].n);
+    if (!/^study_boot_[a-f0-9]{12}$/.test(role)) throw new Error("refusing role name");
+    await admin.unsafe(
+      `create role ${role} login password '${rolePassword}' nosuperuser nocreatedb nocreaterole`,
+    );
+    roleReady = true;
 
-    const legacy = fixtureTarget(base);
-    created.push(legacy.name);
-    await admin.unsafe(`create database ${legacy.name}`);
-    const raw = client(legacy.app);
+    const legacy = await createOwned(admin, parts, created);
+    const raw = legacy.sql;
     open.push(raw);
     await raw.unsafe(legacyTables);
     await raw.unsafe(
@@ -138,10 +212,8 @@ test("postgres login, migration, and session compensation", { timeout: 60000 }, 
     const versions = await raw`select count(*)::int as n from public.schema_migrations where id = ${MILLIS_MIGRATION_ID}`;
     assert.equal(versions[0].n, 1);
 
-    const partial = fixtureTarget(base);
-    created.push(partial.name);
-    await admin.unsafe(`create database ${partial.name}`);
-    const part = client(partial.app);
+    const partial = await createOwned(admin, parts, created);
+    const part = partial.sql;
     open.push(part);
     await part.unsafe(legacyTables);
     await part.unsafe(
@@ -158,11 +230,9 @@ test("postgres login, migration, and session compensation", { timeout: 60000 }, 
     assert.ok(types.length >= 6);
     assert.ok(types.every((column) => column.data_type === "bigint"));
 
-    const raced = fixtureTarget(base);
-    created.push(raced.name);
-    await admin.unsafe(`create database ${raced.name}`);
-    const left = client(raced.app);
-    const right = client(raced.app);
+    const raced = await createOwned(admin, parts, created);
+    const left = raced.sql;
+    const right = client(parts, raced.name);
     open.push(left, right);
     await left.unsafe(legacyTables);
     await Promise.all([widenMillis(left), widenMillis(right)]);
@@ -172,7 +242,7 @@ test("postgres login, migration, and session compensation", { timeout: 60000 }, 
     `;
     assert.equal(raceTypes[0].data_type, "bigint");
 
-    const holder = client(raced.app);
+    const holder = client(parts, raced.name);
     open.push(holder);
     await holder.unsafe("begin");
     await holder.unsafe(`select pg_advisory_xact_lock(${MILLIS_ADVISORY_LOCK})`);
@@ -190,10 +260,93 @@ test("postgres login, migration, and session compensation", { timeout: 60000 }, 
     setTimeout(() => holder.unsafe("rollback").catch(() => {}), 250);
     await retry;
 
-    const fresh = fixtureTarget(base);
-    created.push(fresh.name);
-    await admin.unsafe(`create database ${fresh.name}`);
-    const db = await openPostgres(fresh.app);
+    const locked = await createOwned(admin, parts, created);
+    open.push(locked.sql);
+    await locked.sql.unsafe(legacyTables);
+    await locked.sql.unsafe(
+      `insert into orders (id,code,user_id,plan,group_size,amount_mnt,list_amount_mnt,status,expires_at,paid_at,created_at)
+       values (1,'ES-1000',1,'week',1,3500,7000,'awaiting_payment',1700000100,null,1700000000)`,
+    );
+    const locker = client(parts, locked.name);
+    open.push(locker);
+    await locker.unsafe("begin");
+    await locker.unsafe("lock table public.orders in access exclusive mode");
+    await assert.rejects(
+      widenMillis(locked.sql, { lockTimeoutMs: 300, statementTimeoutMs: 1000, retries: 0 }),
+      (error) => error.code === "55P03",
+    );
+    const unchanged = await locker`
+      select data_type from information_schema.columns
+      where table_schema = 'public' and table_name = 'orders' and column_name = 'created_at'
+    `;
+    assert.equal(unchanged[0].data_type, "integer");
+    const keptValue = await locker`select paid_at, created_at from orders where code = 'ES-1000'`;
+    assert.equal(keptValue[0].paid_at, null);
+    assert.equal(Number(keptValue[0].created_at), 1700000000);
+    await locker.unsafe("rollback");
+    await widenMillis(locked.sql, { retries: 0 });
+    const rewritten = await locked.sql`
+      select data_type from information_schema.columns
+      where table_schema = 'public' and table_name = 'orders' and column_name = 'created_at'
+    `;
+    assert.equal(rewritten[0].data_type, "bigint");
+
+    const manual = await createOwned(admin, parts, created);
+    open.push(manual.sql);
+    await manual.sql.unsafe(legacyTables);
+    await manual.sql.end({ timeout: 1 });
+    await new Promise((resolve, reject) => {
+      execFile(
+        "psql",
+        ["-h", parts.host, "-p", String(parts.port), "-U", parts.user, "-d", manual.name, "-v", "ON_ERROR_STOP=1", "-f", "server/migrations/2026-11-08-millis-bigint.sql"],
+        { env: { ...process.env, PGPASSWORD: parts.password } },
+        (error, _stdout, stderr) => (error ? reject(new Error(stderr || error.message)) : resolve()),
+      );
+    });
+    await new Promise((resolve, reject) => {
+      execFile(
+        "psql",
+        ["-h", parts.host, "-p", String(parts.port), "-U", parts.user, "-d", manual.name, "-v", "ON_ERROR_STOP=1", "-f", "server/migrations/2026-11-08-millis-bigint.sql"],
+        { env: { ...process.env, PGPASSWORD: parts.password } },
+        (error, _stdout, stderr) => (error ? reject(new Error(stderr || error.message)) : resolve()),
+      );
+    });
+    const manualClient = await identified(parts, manual.name);
+    open.push(manualClient);
+    const manualType = await manualClient`
+      select count(*)::int as n from information_schema.columns
+      where table_schema = 'public'
+        and table_name in ('orders', 'entitlements')
+        and column_name in ('starts_at','ends_at','created_at','expires_at','paid_at')
+        and data_type = 'bigint'
+    `;
+    assert.equal(manualType[0].n, 6);
+    const manualVersion = await manualClient`select count(*)::int as n from public.schema_migrations where id = ${MILLIS_MIGRATION_ID}`;
+    assert.equal(manualVersion[0].n, 1);
+
+    const boots = await createOwned(admin, parts, created);
+    await boots.sql.end({ timeout: 1 });
+    const [bootOne, bootTwo] = await Promise.all([
+      openPostgres(ownedUrl(parts, boots.name)),
+      openPostgres(ownedUrl(parts, boots.name)),
+    ]);
+    await bootOne.close();
+    await bootTwo.close();
+    const bootCheck = await identified(parts, boots.name);
+    open.push(bootCheck);
+    const bootColumn = await bootCheck`
+      select data_type from information_schema.columns
+      where table_schema = 'public' and table_name = 'orders' and column_name = 'created_at'
+    `;
+    assert.equal(bootColumn[0].data_type, "bigint");
+    assert.equal((await bootCheck`select to_regclass('public.users') as name`)[0].name, "users");
+
+    const fresh = await createOwned(admin, parts, created);
+    await fresh.sql.end({ timeout: 1 });
+    const db = await openPostgres(ownedUrl(parts, fresh.name));
+    const selected = await db.get("select current_database() as name");
+    if (selected.name !== fresh.name)
+      throw new Error(`openPostgres selected ${selected.name}`);
     try {
       await assertFixture(db, fresh.name);
       await assert.rejects(
@@ -364,6 +517,106 @@ test("postgres login, migration, and session compensation", { timeout: 60000 }, 
       const alive = await Promise.all(agents.map((agent) => agent.get("/api/session")));
       assert.equal(alive.filter((response) => response.body.user).length, 3);
 
+      await assertFixture(db, fresh.name);
+      await db.run("delete from user_sessions");
+      await db.run("delete from sessions");
+      async function seed(sid, at) {
+        const expires = Date.now() + 86400000;
+        await db.run("insert into sessions (sid,data,expires) values (?,?,?)", [
+          sid,
+          JSON.stringify({
+            cookie: {
+              originalMaxAge: 86400000,
+              expires: new Date(expires).toISOString(),
+              httpOnly: true,
+              path: "/",
+              sameSite: "lax",
+            },
+            userId: user.id,
+            csrf: `csrf-${sid}`,
+          }),
+          expires,
+        ]);
+        await db.run(
+          "insert into user_sessions (sid_hash,sid,user_id,created_at,last_seen,label,network) values (?,?,?,?,?,?,?)",
+          [sessionHash(sid), sid, user.id, at, at, "Browser on computer", "private or local network"],
+        );
+      }
+      function browserCookie(sidValue) {
+        return `studyroom.sid=${encodeURIComponent("s:" + signature.sign(sidValue, config.sessionSecret))}`;
+      }
+      const loginFields = {
+        userId: user.id,
+        label: "Browser on computer",
+        network: "private or local network",
+      };
+      await seed("A", 1);
+      await seed("B", 2);
+      await seed("C", 3);
+      let releaseCancel;
+      const cancelEntered = new Promise((resolve) => {
+        releaseCancel = resolve;
+      });
+      await registerLogin(db, { ...loginFields, sid: "D", now: 4 });
+      await Promise.all([
+        (async () => {
+          releaseCancel();
+          await cancelLoginRegistration(db, "D");
+        })(),
+        (async () => {
+          await cancelEntered;
+          await registerLogin(db, { ...loginFields, sid: "E", now: 5 });
+          await activateLogin(db, { ...loginFields, sid: "E", now: 5 });
+        })(),
+      ]);
+      const afterOverlap = await db.all(
+        "select sid from user_sessions where user_id=? order by created_at",
+        [user.id],
+      );
+      assert.ok(afterOverlap.length <= 3);
+      assert.equal(afterOverlap.some((row) => row.sid === "E"), true);
+      assert.equal(afterOverlap.some((row) => row.sid === "A"), false);
+      assert.equal(afterOverlap.some((row) => row.sid === "D"), false);
+      assert.equal(await touchSession(db, "A", user.id, Date.now()), false);
+      assert.equal(await touchSession(db, "E", user.id, Date.now()), true);
+      assert.equal(
+        (await supertest(app).get("/api/session").set("Cookie", browserCookie("A"))).body.user,
+        null,
+      );
+
+      await assertFixture(db, fresh.name);
+      await db.run("delete from user_sessions");
+      await db.run("delete from sessions");
+      await seed("A", 10);
+      await seed("B", 11);
+      await seed("C", 12);
+      let releaseRevoke;
+      const revokeEntered = new Promise((resolve) => {
+        releaseRevoke = resolve;
+      });
+      await registerLogin(db, { ...loginFields, sid: "D", now: 13 });
+      await Promise.all([
+        (async () => {
+          releaseRevoke();
+          await revokeOtherSessions(db, { userId: user.id, sid: "B" });
+        })(),
+        (async () => {
+          await revokeEntered;
+          await cancelLoginRegistration(db, "D");
+        })(),
+      ]);
+      assert.equal(await touchSession(db, "A", user.id, Date.now()), false);
+      assert.equal(await touchSession(db, "B", user.id, Date.now()), true);
+      assert.equal(await touchSession(db, "C", user.id, Date.now()), false);
+      assert.equal(await touchSession(db, "D", user.id, Date.now()), false);
+      assert.ok(
+        Number((await db.get("select count(*) as n from user_sessions where user_id=?", [user.id])).n) <= 3,
+      );
+      assert.equal(
+        (await supertest(app).get("/api/session").set("Cookie", browserCookie("A"))).body.user,
+        null,
+      );
+
       const secureApp = createApp({
         db,
         config: { ...config, production: true, trustProxy: true, origin: "https://eightsteppe.org" },
@@ -397,25 +650,30 @@ test("postgres login, migration, and session compensation", { timeout: 60000 }, 
       await db.close();
     }
 
-    const blockedBoot = fixtureTarget(base);
-    created.push(blockedBoot.name);
-    await admin.unsafe(`create database ${blockedBoot.name}`);
-    const owner = client(blockedBoot.app);
-    open.push(owner);
-    await owner.unsafe("revoke create on schema public from public");
-    await owner.unsafe(`grant connect on database ${blockedBoot.name} to study_boot`);
-    const bootUrl = new URL(blockedBoot.app);
-    bootUrl.username = "study_boot";
-    bootUrl.password = "study_boot";
-    await assert.rejects(() => openPostgres(bootUrl.toString()));
+    const blockedBoot = await createOwned(admin, parts, created);
+    await blockedBoot.sql.unsafe("revoke create on schema public from public");
+    await blockedBoot.sql.unsafe(`grant connect on database ${blockedBoot.name} to ${role}`);
+    const bootProbe = postgres({
+      ...optionsFor(parts, blockedBoot.name),
+      user: role,
+      password: rolePassword,
+    });
+    open.push(bootProbe);
+    const [bootWho] = await bootProbe`select current_database() as name`;
+    assert.equal(bootWho.name, blockedBoot.name);
+    await bootProbe.end({ timeout: 1 });
+    await assert.rejects(() =>
+      openPostgres(ownedUrl({ ...parts, user: role, password: rolePassword }, blockedBoot.name)),
+    );
     const backends = await admin`
       select count(*)::int as n from pg_stat_activity
-      where usename = 'study_boot' and datname = ${blockedBoot.name}
+      where usename = ${role} and datname = ${blockedBoot.name}
     `;
     assert.equal(backends[0].n, 0);
   } finally {
     for (const sql of open) await sql.end({ timeout: 1 }).catch(() => {});
+    for (const name of created) await dropFixture(parts, name).catch(() => {});
+    if (roleReady) await admin.unsafe(`drop role if exists ${role}`).catch(() => {});
     await admin.end({ timeout: 1 }).catch(() => {});
-    for (const name of created) await dropFixture(maintenanceUrl.toString(), name).catch(() => {});
   }
 });

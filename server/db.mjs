@@ -103,10 +103,14 @@ function wrapSqlite(raw) {
   };
 }
 
-const millisColumns = {
-  entitlements: ["starts_at", "ends_at", "created_at"],
-  orders: ["created_at", "expires_at", "paid_at"],
-};
+const millisColumns = [
+  ["entitlements", "starts_at"],
+  ["entitlements", "ends_at"],
+  ["entitlements", "created_at"],
+  ["orders", "created_at"],
+  ["orders", "expires_at"],
+  ["orders", "paid_at"],
+];
 export const MILLIS_MIGRATION_ID = "2026-11-08-millis-bigint";
 // Transaction-scoped advisory lock. Session locks do not survive the pooler.
 export const MILLIS_ADVISORY_LOCK = 814763219;
@@ -118,20 +122,22 @@ function timeoutMs(name, value, fallback) {
   return String(parsed);
 }
 
+async function columnType(tx, table, column) {
+  const found = await tx`
+    select data_type
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = ${table}
+      and column_name = ${column}
+  `;
+  return found[0]?.data_type || null;
+}
+
 async function integerMillis(tx) {
   const left = [];
-  for (const [table, columns] of Object.entries(millisColumns)) {
-    const found = await tx`
-      select column_name, data_type
-      from information_schema.columns
-      where table_schema = 'public'
-        and table_name = ${table}
-        and column_name in ${tx(columns)}
-    `;
-    for (const column of columns) {
-      const row = found.find((item) => item.column_name === column);
-      if (!row || row.data_type !== "bigint") left.push(`public.${table}.${column}`);
-    }
+  for (const [table, column] of millisColumns) {
+    if ((await columnType(tx, table, column)) !== "bigint")
+      left.push(`public.${table}.${column}`);
   }
   return left;
 }
@@ -140,6 +146,29 @@ async function integerMillis(tx) {
 // create them as bigint. Boot still runs this so a missed manual step cannot
 // bring back error 22003. One advisory lock, a recheck, and a short timeout
 // keep concurrent cold starts from stacking ACCESS EXCLUSIVE rewrites.
+async function applyMillis(tx) {
+  await tx.unsafe(
+    `create table if not exists public.schema_migrations (
+       id text primary key,
+       applied_at timestamptz not null default now()
+     )`,
+  );
+  await tx.unsafe("alter table public.schema_migrations enable row level security");
+  for (const [table, column] of millisColumns) {
+    const kind = await columnType(tx, table, column);
+    if (kind === "integer")
+      await tx.unsafe(`alter table public.${table} alter column ${column} type bigint`);
+    else if (kind !== "bigint")
+      throw new Error(`millis migration incomplete: public.${table}.${column}`);
+  }
+  const left = await integerMillis(tx);
+  if (left.length) throw new Error(`millis migration incomplete: ${left.join(", ")}`);
+  await tx.unsafe(
+    `insert into public.schema_migrations (id) values ('${MILLIS_MIGRATION_ID}') on conflict (id) do nothing`,
+  );
+  return { ok: true };
+}
+
 export async function widenMillis(sql, options = {}) {
   const lock = timeoutMs("lock_timeout", options.lockTimeoutMs, 2000);
   const statement = timeoutMs("statement_timeout", options.statementTimeoutMs, 8000);
@@ -152,41 +181,7 @@ export async function widenMillis(sql, options = {}) {
           `select set_config('lock_timeout', '${lock}', true), set_config('statement_timeout', '${statement}', true)`,
         );
         await tx.unsafe(`select pg_advisory_xact_lock(${MILLIS_ADVISORY_LOCK})`);
-        await tx.unsafe(
-          `create table if not exists public.schema_migrations (
-             id text primary key,
-             applied_at timestamptz not null default now()
-           )`,
-        );
-        await tx.unsafe(
-          "alter table public.schema_migrations enable row level security",
-        );
-        for (const [table, columns] of Object.entries(millisColumns)) {
-          const found = await tx`
-            select column_name, data_type
-            from information_schema.columns
-            where table_schema = 'public'
-              and table_name = ${table}
-              and column_name in ${tx(columns)}
-          `;
-          const narrow = columns.filter((column) =>
-            found.some(
-              (row) => row.column_name === column && row.data_type === "integer",
-            ),
-          );
-          if (!narrow.length) continue;
-          await tx.unsafe(
-            `alter table public.${table} ${narrow
-              .map((column) => `alter column ${column} type bigint`)
-              .join(", ")}`,
-          );
-        }
-        const left = await integerMillis(tx);
-        if (left.length) throw new Error(`millis migration incomplete: ${left.join(", ")}`);
-        await tx.unsafe(
-          `insert into public.schema_migrations (id) values ('${MILLIS_MIGRATION_ID}') on conflict (id) do nothing`,
-        );
-        return { ok: true };
+        return applyMillis(tx);
       });
     } catch (error) {
       last = error;
@@ -237,7 +232,17 @@ export async function openPostgres(connectionString) {
     },
   });
   try {
-    return await initializePostgres(sql);
+    let last;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await initializePostgres(sql);
+      } catch (error) {
+        last = error;
+        // Concurrent CREATE TABLE IF NOT EXISTS can collide in pg_type.
+        if (attempt === 2 || (error.code !== "23505" && error.code !== "40P01")) throw error;
+      }
+    }
+    throw last;
   } catch (error) {
     await sql.end({ timeout: 5 }).catch(() => {});
     throw error;
@@ -249,19 +254,58 @@ async function initializePostgres(sql) {
     new URL("./schema.postgres.sql", import.meta.url),
     "utf8",
   );
-  for (const statement of sqlStatements(schema)) await sql.unsafe(statement);
-  await sql.unsafe(
-    "ALTER TABLE access_requests ADD COLUMN IF NOT EXISTS plan text",
-  );
-  const roles = await sql`
-    select rolname from pg_roles where rolname in ('anon', 'authenticated')
-  `;
-  for (const role of roles) {
-    if (role.rolname !== "anon" && role.rolname !== "authenticated") continue;
-    await sql.unsafe(
-      `REVOKE ALL ON TABLE users, grants, access_requests, attempts, sessions, audit, runs FROM ${role.rolname}`,
+  const locked = [
+    "sms_payment_events",
+    "sms_rate_hits",
+    "orders",
+    "entitlements",
+    "user_sessions",
+    "account_notices",
+    "schema_migrations",
+  ];
+  // One advisory lock covers schema creation and the int4 rewrite, so two
+  // cold starts cannot both insert the same pg_type row or rewrite a table.
+  await sql.begin(async (tx) => {
+    await tx.unsafe(
+      "select set_config('lock_timeout', '8000', true), set_config('statement_timeout', '30000', true)",
     );
-  }
+    await tx.unsafe(`select pg_advisory_xact_lock(${MILLIS_ADVISORY_LOCK})`);
+    for (const statement of sqlStatements(schema)) await tx.unsafe(statement);
+    await tx.unsafe("ALTER TABLE access_requests ADD COLUMN IF NOT EXISTS plan text");
+    const roles = await tx`
+      select rolname from pg_roles where rolname in ('anon', 'authenticated')
+    `;
+    for (const role of roles) {
+      if (role.rolname !== "anon" && role.rolname !== "authenticated") continue;
+      await tx.unsafe(
+        `REVOKE ALL ON TABLE users, grants, access_requests, attempts, sessions, audit, runs FROM ${role.rolname}`,
+      );
+    }
+    for (const statement of sqlStatements(paymentTables)) await tx.unsafe(statement);
+    await applyMillis(tx);
+    for (const statement of sqlStatements(smsTables)) await tx.unsafe(statement);
+    for (const statement of sqlStatements(sessionTables)) await tx.unsafe(statement);
+    await tx.unsafe("ALTER TABLE audit ADD COLUMN IF NOT EXISTS detail text");
+    for (const table of locked)
+      await tx.unsafe(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`);
+    for (const table of ["orders", "entitlements"]) {
+      await tx.unsafe(`CREATE SEQUENCE IF NOT EXISTS ${table}_id_seq`);
+      await tx.unsafe(
+        `ALTER TABLE ${table} ALTER COLUMN id SET DEFAULT nextval('${table}_id_seq')`,
+      );
+      await tx.unsafe(`ALTER SEQUENCE ${table}_id_seq OWNED BY ${table}.id`);
+      await tx.unsafe(
+        `SELECT setval('${table}_id_seq', GREATEST(COALESCE((SELECT MAX(id) FROM ${table}), 0), 1))`,
+      );
+    }
+    for (const role of roles) {
+      if (role.rolname !== "anon" && role.rolname !== "authenticated") continue;
+      await tx.unsafe(`REVOKE ALL ON TABLE ${locked.join(", ")} FROM ${role.rolname}`);
+      await tx.unsafe(
+        `REVOKE ALL ON SEQUENCE orders_id_seq, entitlements_id_seq FROM ${role.rolname}`,
+      );
+    }
+  });
   const api = {
     dialect: "postgres",
     ...queryApi(sql),
@@ -283,46 +327,6 @@ async function initializePostgres(sql) {
       }),
     close: () => sql.end({ timeout: 5 }),
   };
-  for (const statement of sqlStatements(paymentTables))
-    await sql.unsafe(statement);
-  await widenMillis(sql);
-  for (const statement of sqlStatements(smsTables))
-    await sql.unsafe(statement);
-  for (const statement of sqlStatements(sessionTables))
-    await sql.unsafe(statement);
-  await sql.unsafe("ALTER TABLE audit ADD COLUMN IF NOT EXISTS detail text");
-  const locked = [
-    "sms_payment_events",
-    "sms_rate_hits",
-    "orders",
-    "entitlements",
-    "user_sessions",
-    "account_notices",
-    "schema_migrations",
-  ];
-  for (const table of locked)
-    await sql.unsafe(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`);
-  for (const table of ["orders", "entitlements"]) {
-    await sql.unsafe(`CREATE SEQUENCE IF NOT EXISTS ${table}_id_seq`);
-    await sql.unsafe(
-      `ALTER TABLE ${table} ALTER COLUMN id SET DEFAULT nextval('${table}_id_seq')`,
-    );
-    await sql.unsafe(
-      `ALTER SEQUENCE ${table}_id_seq OWNED BY ${table}.id`,
-    );
-    await sql.unsafe(
-      `SELECT setval('${table}_id_seq', GREATEST(COALESCE((SELECT MAX(id) FROM ${table}), 0), 1))`,
-    );
-  }
-  for (const role of roles) {
-    if (role.rolname !== "anon" && role.rolname !== "authenticated") continue;
-    await sql.unsafe(
-      `REVOKE ALL ON TABLE ${locked.join(", ")} FROM ${role.rolname}`,
-    );
-    await sql.unsafe(
-      `REVOKE ALL ON SEQUENCE orders_id_seq, entitlements_id_seq FROM ${role.rolname}`,
-    );
-  }
   await expireInvitations(api);
   await migrateLegacyGrants(api);
   return api;

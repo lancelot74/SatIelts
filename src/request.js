@@ -10,21 +10,56 @@ export function gaveUp(error, signal) {
   return name === "AbortError" || name === "TimeoutError" || error?.code === 20;
 }
 
+function abortReason(signal, fallback) {
+  if (signal?.reason instanceof Error) return signal.reason;
+  if (!fallback || fallback.name === "AbortError" || fallback.name === "TimeoutError")
+    return fallback;
+  const error = new Error("aborted");
+  error.name = "AbortError";
+  return error;
+}
+
 function deadline(timeoutMs, caller) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const onCaller = () => controller.abort();
+  const timeout = new Error("request timed out");
+  timeout.name = "TimeoutError";
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort(timeout);
+  }, timeoutMs);
+  const onCaller = () => controller.abort(caller.reason);
   if (caller) {
-    if (caller.aborted) controller.abort();
+    if (caller.aborted) controller.abort(caller.reason);
     else caller.addEventListener("abort", onCaller);
   }
   return {
     signal: controller.signal,
+    timedOut: () => timedOut,
     stop() {
       clearTimeout(timer);
       caller?.removeEventListener("abort", onCaller);
     },
   };
+}
+
+function wait(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortReason(signal));
+      return;
+    }
+    const timer = setTimeout(finish, ms);
+    function finish() {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }
+    function onAbort() {
+      clearTimeout(timer);
+      reject(abortReason(signal));
+    }
+    signal?.addEventListener("abort", onAbort);
+  });
 }
 
 export async function request(url, options = {}) {
@@ -37,6 +72,10 @@ export async function request(url, options = {}) {
   if (rest.body != null) headers["Content-Type"] = "application/json";
   let lastError;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (rest.signal?.aborted) {
+      lastError = abortReason(rest.signal);
+      break;
+    }
     const clock = deadline(limit, rest.signal);
     try {
       const response = await fetch(url, {
@@ -53,9 +92,14 @@ export async function request(url, options = {}) {
       }
       return value;
     } catch (error) {
-      lastError = error;
-      if (gaveUp(error, clock.signal) || attempt === attempts - 1) break;
-      await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
+      lastError = clock.signal.aborted ? abortReason(clock.signal, error) : error;
+      if (gaveUp(lastError, clock.signal) || attempt === attempts - 1) break;
+      try {
+        await wait(400 * (attempt + 1), rest.signal);
+      } catch (aborted) {
+        lastError = aborted;
+        break;
+      }
     } finally {
       clock.stop();
     }

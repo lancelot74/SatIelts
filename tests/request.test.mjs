@@ -22,10 +22,12 @@ test("a caller signal does not turn off the deadline", async () => {
   const caller = new AbortController();
   const started = Date.now();
   try {
-    await assert.rejects(
-      request(url, { signal: caller.signal, timeoutMs: 150 }),
-      (error) => gaveUp(error, { aborted: true }) || error.name === "AbortError",
-    );
+    await assert.rejects(request(url, { signal: caller.signal, timeoutMs: 150 }), (error) => {
+      assert.equal(error.name, "TimeoutError");
+      assert.equal(error.message, "request timed out");
+      assert.equal(gaveUp(error, { aborted: false }), true);
+      return true;
+    });
     assert.ok(Date.now() - started < 800);
   } finally {
     caller.abort();
@@ -47,7 +49,11 @@ test("a stalled body and a missing AbortSignal.timeout still stop", async () => 
   });
   const started = Date.now();
   try {
-    await assert.rejects(request(url, { timeoutMs: 150 }));
+    await assert.rejects(request(url, { timeoutMs: 150 }), (error) => {
+      assert.equal(error.name, "TimeoutError");
+      assert.equal(error.message, "request timed out");
+      return true;
+    });
     assert.ok(Date.now() - started < 800);
   } finally {
     if (descriptor) Object.defineProperty(AbortSignal, "timeout", descriptor);
@@ -81,21 +87,38 @@ test("an aborted read is not tried again and a failed mutation is not retried", 
       request(url, { method: "POST", body: "{}", timeoutMs: 1000 }),
     );
     assert.equal(writes, 1);
-    const caller = new AbortController();
-    const hung = serve(() => {});
-    const slow = await hung;
-    const started = Date.now();
-    const pending = request(slow.url, { signal: caller.signal, timeoutMs: 5000 });
-    caller.abort();
-    await assert.rejects(pending);
-    assert.ok(Date.now() - started < 500);
-    await slow.close();
   } finally {
     await close();
   }
 });
 
-test("a generic error is terminal when the deadline signal already aborted", () => {
-  assert.equal(gaveUp(new Error("The operation was aborted"), { aborted: true }), true);
+test("an abort during the retry wait does not send another request", async () => {
+  let reads = 0;
+  const { url, close } = await serve((_req, res) => {
+    reads += 1;
+    res.writeHead(500, { "content-type": "application/json" });
+    res.end('{"error":"server_error"}');
+  });
+  const caller = new AbortController();
+  const reason = new Error("stop please");
+  reason.name = "AbortError";
+  try {
+    const pending = request(url, { signal: caller.signal, timeoutMs: 5000 });
+    setTimeout(() => caller.abort(reason), 80);
+    await assert.rejects(pending, (error) => error === reason);
+    assert.equal(reads, 1);
+    caller.abort(reason);
+    const again = request(url, { signal: caller.signal, timeoutMs: 5000 });
+    await assert.rejects(again, (error) => error === reason);
+    assert.equal(reads, 1);
+  } finally {
+    await close();
+  }
+});
+
+test("timeout and abort reasons are specific", () => {
+  const timeout = new Error("request timed out");
+  timeout.name = "TimeoutError";
+  assert.equal(gaveUp(timeout, { aborted: false }), true);
   assert.equal(gaveUp(new Error("socket hang up"), { aborted: false }), false);
 });

@@ -90,80 +90,51 @@ async function addNotice(tx, { userId, email, kind, separate, now }) {
   );
 }
 
-// Eviction is committed with the new row so concurrent logins cannot all
-// pass the cap. The caller restores evicted rows if the cookie save fails.
+// Insert only. Cap eviction happens after the cookie is stored, and a failed
+// save deletes this row alone. Old session credentials are never rewritten.
 export async function registerLogin(db, { sid, userId, now, label, network }) {
   const hash = sessionHash(sid);
   return db.transaction(async (tx) => {
     if (db.dialect === "postgres")
       await tx.get("SELECT id FROM users WHERE id=? FOR UPDATE", [userId]);
-    const rows = await tx.all(
-      "SELECT sid, sid_hash, created_at, last_seen, network, label FROM user_sessions WHERE user_id=? ORDER BY created_at ASC, sid_hash ASC",
-      [userId],
-    );
-    const evicted = [];
-    while (rows.length >= SESSION_CAP) {
-      const oldest = rows.shift();
-      const saved = await tx.get(
-        "SELECT data, expires FROM sessions WHERE sid=?",
-        [oldest.sid],
-      );
-      evicted.push({
-        sid: oldest.sid,
-        sidHash: oldest.sid_hash,
-        createdAt: oldest.created_at,
-        lastSeen: oldest.last_seen,
-        network: oldest.network,
-        label: oldest.label,
-        data: saved?.data ?? null,
-        expires: saved?.expires ?? null,
-      });
-      await tx.run("DELETE FROM sessions WHERE sid=?", [oldest.sid]);
-      await tx.run("DELETE FROM user_sessions WHERE sid=?", [oldest.sid]);
-    }
     await tx.run(
       "INSERT INTO user_sessions (sid_hash,sid,user_id,created_at,last_seen,label,network) VALUES (?,?,?,?,?,?,?)",
       [hash, sid, userId, now, now, label, network],
     );
-    return {
-      evicted,
-      unusual: rows.some((row) => row.network && row.network !== network),
-    };
   });
 }
 
 export async function cancelLoginRegistration(db, sid) {
+  await db.run("DELETE FROM sessions WHERE sid=?", [sid]);
   await db.run("DELETE FROM user_sessions WHERE sid=?", [sid]);
 }
 
-export async function restoreEvictedSessions(db, userId, evicted) {
-  for (const row of evicted) {
-    if (row.data != null && row.expires != null)
-      await db.run(
-        "INSERT INTO sessions (sid,data,expires) VALUES (?,?,?) ON CONFLICT(sid) DO NOTHING",
-        [row.sid, row.data, row.expires],
-      );
-    await db.run(
-      "INSERT INTO user_sessions (sid_hash,sid,user_id,created_at,last_seen,label,network) VALUES (?,?,?,?,?,?,?) ON CONFLICT(sid) DO NOTHING",
-      [
-        row.sidHash,
-        row.sid,
-        userId,
-        row.createdAt,
-        row.lastSeen,
-        row.label || "Browser on computer",
-        row.network || "",
-      ],
+// Drop the oldest other sessions until the cap holds. The saved sid stays.
+export async function activateLogin(db, { sid, userId, now, network }) {
+  return db.transaction(async (tx) => {
+    if (db.dialect === "postgres")
+      await tx.get("SELECT id FROM users WHERE id=? FOR UPDATE", [userId]);
+    const current = await tx.get(
+      "SELECT sid FROM user_sessions WHERE sid=? AND user_id=?",
+      [sid, userId],
     );
-  }
-}
-
-export async function recordLoginNotices(db, { userId, now, evicted, unusual }) {
-  await db.transaction(async (tx) => {
-    if (evicted.length)
+    if (!current) return { active: 0, dropped: 0 };
+    const others = await tx.all(
+      "SELECT sid, network FROM user_sessions WHERE user_id=? AND sid<>? ORDER BY created_at ASC, sid_hash ASC",
+      [userId, sid],
+    );
+    let dropped = 0;
+    while (others.length + 1 > SESSION_CAP) {
+      const oldest = others.shift();
+      await tx.run("DELETE FROM sessions WHERE sid=?", [oldest.sid]);
+      await tx.run("DELETE FROM user_sessions WHERE sid=?", [oldest.sid]);
+      dropped += 1;
+    }
+    if (dropped)
       await addNotice(tx, { userId, kind: "excess_login", separate: false, now });
-    if (unusual)
+    if (others.some((row) => row.network && row.network !== network))
       await addNotice(tx, { userId, kind: "unusual_place", separate: false, now });
+    return { active: others.length + 1, dropped };
   });
 }
 

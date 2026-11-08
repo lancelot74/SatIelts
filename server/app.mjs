@@ -28,12 +28,11 @@ import { ingestSms, linkSmsEvent, noteSmsHit } from "./sms-ingest.mjs";
 import {
   coarseNetwork,
   deviceLabel,
+  activateLogin,
   cancelLoginRegistration,
   listNotices,
   listSessions,
-  recordLoginNotices,
   registerLogin,
-  restoreEvictedSessions,
   revokeOtherSessions,
   revokeSession,
   touchSession,
@@ -372,29 +371,9 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
       const network = coarseNetwork(req.ip);
       const label = deviceLabel(req.get("user-agent"));
       let registeredSid = null;
-      let registration = { evicted: [], unusual: false };
-      try {
-        await new Promise((resolve, reject) => {
-          req.session.regenerate((err) => (err ? reject(err) : resolve()));
-        });
-        req.session.userId = user.id;
-        req.session.csrf = random();
-        registeredSid = req.sessionID;
-        registration = await registerLogin(db, {
-          sid: registeredSid,
-          userId: user.id,
-          now: now(),
-          label,
-          network,
-        });
-        await new Promise((resolve, reject) => {
-          req.session.save((error) => (error ? reject(error) : resolve()));
-        });
-      } catch (error) {
+      const abandon = async () => {
         if (registeredSid)
           await cancelLoginRegistration(db, registeredSid).catch(() => {});
-        if (registration.evicted.length)
-          await restoreEvictedSessions(db, user.id, registration.evicted).catch(() => {});
         await new Promise((resolve) => {
           if (!req.session) return resolve();
           req.session.destroy(() => resolve());
@@ -404,14 +383,34 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
           sameSite: "lax",
           secure: Boolean(config.production),
         });
+      };
+      try {
+        await new Promise((resolve, reject) => {
+          req.session.regenerate((err) => (err ? reject(err) : resolve()));
+        });
+        req.session.userId = user.id;
+        req.session.csrf = random();
+        registeredSid = req.sessionID;
+        await registerLogin(db, {
+          sid: registeredSid,
+          userId: user.id,
+          now: now(),
+          label,
+          network,
+        });
+        await new Promise((resolve, reject) => {
+          req.session.save((error) => (error ? reject(error) : resolve()));
+        });
+        await activateLogin(db, {
+          sid: registeredSid,
+          userId: user.id,
+          now: now(),
+          network,
+        });
+      } catch (error) {
+        await abandon();
         throw error;
       }
-      await recordLoginNotices(db, {
-        userId: user.id,
-        now: now(),
-        evicted: registration.evicted,
-        unusual: registration.unusual,
-      }).catch(() => {});
       const checkout = `/checkout?plan=${pending.plan}&group=${pending.group === "3" ? "3" : "1"}`;
       const target = String(pending.next || "").startsWith("/checkout")
         ? pending.next
