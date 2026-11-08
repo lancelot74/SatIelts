@@ -12,6 +12,7 @@ const config = {
   googleClientSecret: "test-secret",
   redirectUri: "http://localhost:5173/api/auth/google/callback",
   adminEmails: "owner@example.com",
+  ownerGoogleSub: "owner",
 };
 function fixture() {
   const db = openDatabase(":memory:");
@@ -81,6 +82,14 @@ test("hosted postgres uses portable timestamps, placeholders, and locked-down ta
   );
   assert.equal(schema.includes("INSERT OR REPLACE"), false);
   assert.equal(schema.includes("PRAGMA"), false);
+  const boot = fs.readFileSync(new URL("../server/db.mjs", import.meta.url), "utf8");
+  for (const table of ["orders", "entitlements", "sms_payment_events", "user_sessions"])
+    assert.equal(boot.includes(table), true);
+  assert.equal(boot.includes("ENABLE ROW LEVEL SECURITY"), true);
+  assert.equal(boot.includes("REVOKE ALL ON TABLE"), true);
+  assert.equal(boot.includes("REVOKE ALL ON SEQUENCE orders_id_seq, entitlements_id_seq"), true);
+  assert.equal(fs.existsSync("public/media"), false);
+  assert.equal(fs.existsSync("private/media/ielts/01/listening-part1.mp3"), true);
 });
 test("health reports the open database", async () => {
   const body = (await fixture().agent().get("/api/health").expect(200)).body;
@@ -273,9 +282,11 @@ test("manual access approval, per-exam isolation, revocation, admin restrictions
     userId: s.user.id,
     exam: "ielts",
     action: "approve",
+    days: 7,
+    note: "Verified transfer",
   }).expect(200);
   await student.get("/api/tests/ielts/1").expect(200);
-  await student.get("/api/tests/sat/1").expect(403);
+  await student.get("/api/tests/sat/1").expect(200);
   const run = (
     await mutate(student, "post", "/api/tests/ielts/1/start", s.csrf).expect(
       200,
@@ -291,6 +302,7 @@ test("manual access approval, per-exam isolation, revocation, admin restrictions
     userId: s.user.id,
     exam: "ielts",
     action: "revoke",
+    note: "Owner revoke",
   }).expect(200);
   await student.get("/api/tests/ielts/1").expect(403);
   await student.get(`/api/runs/${run.runId}/result`).expect(403);
@@ -316,6 +328,8 @@ test("one plan approval unlocks IELTS, TOEFL, and SAT", async () => {
     userId: s.user.id,
     exam: "all",
     action: "approve",
+    days: 30,
+    note: "Verified transfer",
   }).expect(200);
   await student.get("/api/tests/ielts/1").expect(200);
   await student.get("/api/tests/toefl/1").expect(200);
@@ -324,6 +338,7 @@ test("one plan approval unlocks IELTS, TOEFL, and SAT", async () => {
     userId: s.user.id,
     exam: "all",
     action: "revoke",
+    note: "Owner revoke",
   }).expect(200);
   await student.get("/api/tests/ielts/1").expect(403);
   await student.get("/api/tests/sat/1").expect(403);
@@ -548,10 +563,12 @@ test("one exam grant unlocks all its sections and full tests, and revocation pro
     userId: s.user.id,
     exam: "ielts",
     action: "approve",
+    days: 7,
+    note: "Verified transfer",
   }).expect(200);
   for (const mode of ["reading", "listening", "writing", "speaking", "full"])
     await learner.get(`/api/tests/ielts/${mode}-1`).expect(200);
-  await learner.get("/api/tests/toefl/full-1").expect(403);
+  await learner.get("/api/tests/toefl/full-1").expect(200);
   const run = (
     await mutate(
       learner,
@@ -564,6 +581,7 @@ test("one exam grant unlocks all its sections and full tests, and revocation pro
     userId: s.user.id,
     exam: "ielts",
     action: "revoke",
+    note: "Owner revoke",
   }).expect(200);
   await mutate(learner, "post", `/api/runs/${run.runId}/submit`, s.csrf).expect(
     403,

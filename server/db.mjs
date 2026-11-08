@@ -2,7 +2,9 @@ import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import session from "express-session";
 import postgres from "postgres";
-import { paymentTables, migrateLegacyGrants } from "./orders.mjs";
+import { paymentTables, migrateLegacyGrants, expireInvitations } from "./orders.mjs";
+import { smsTables } from "./sms-ingest.mjs";
+import { sessionTables } from "./sessions.mjs";
 
 const sqliteSchema = `PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
  CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, google_sub TEXT UNIQUE NOT NULL, email TEXT NOT NULL, name TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
@@ -37,29 +39,14 @@ export function openDatabase(path) {
   if (!columns.some((column) => column.name === "plan"))
     raw.exec("ALTER TABLE access_requests ADD COLUMN plan TEXT");
   raw.exec(paymentTables);
-  const legacy = raw
-    .prepare(
-      "SELECT DISTINCT g.user_id AS id, u.email AS email FROM grants g JOIN users u ON u.id=g.user_id",
-    )
-    .all();
-  const exists = raw.prepare(
-    "SELECT 1 AS ok FROM entitlements WHERE user_id=? AND source='legacy'",
-  );
-  const insert = raw.prepare(
-    "INSERT INTO entitlements (user_id,email,starts_at,ends_at,source,created_at) VALUES (?,?,?,?,?,?)",
-  );
-  const now = Date.now();
-  for (const row of legacy) {
-    if (exists.get(row.id)) continue;
-    insert.run(
-      row.id,
-      String(row.email).toLowerCase(),
-      now,
-      now + 30 * 86400000,
-      "legacy",
-      now,
-    );
-  }
+  raw.exec(smsTables);
+  raw.exec(sessionTables);
+  const audit = raw.prepare("PRAGMA table_info(audit)").all();
+  if (!audit.some((column) => column.name === "detail"))
+    raw.exec("ALTER TABLE audit ADD COLUMN detail TEXT");
+  raw
+    .prepare("DELETE FROM entitlements WHERE user_id IS NULL AND created_at<?")
+    .run(Date.now() - 30 * 86400000);
   return wrapSqlite(raw);
 }
 
@@ -179,6 +166,21 @@ export async function openPostgres(connectionString) {
   };
   for (const statement of sqlStatements(paymentTables))
     await sql.unsafe(statement);
+  for (const statement of sqlStatements(smsTables))
+    await sql.unsafe(statement);
+  for (const statement of sqlStatements(sessionTables))
+    await sql.unsafe(statement);
+  await sql.unsafe("ALTER TABLE audit ADD COLUMN IF NOT EXISTS detail text");
+  const locked = [
+    "sms_payment_events",
+    "sms_rate_hits",
+    "orders",
+    "entitlements",
+    "user_sessions",
+    "account_notices",
+  ];
+  for (const table of locked)
+    await sql.unsafe(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`);
   for (const table of ["orders", "entitlements"]) {
     await sql.unsafe(`CREATE SEQUENCE IF NOT EXISTS ${table}_id_seq`);
     await sql.unsafe(
@@ -191,6 +193,16 @@ export async function openPostgres(connectionString) {
       `SELECT setval('${table}_id_seq', GREATEST(COALESCE((SELECT MAX(id) FROM ${table}), 0), 1))`,
     );
   }
+  for (const role of roles) {
+    if (role.rolname !== "anon" && role.rolname !== "authenticated") continue;
+    await sql.unsafe(
+      `REVOKE ALL ON TABLE ${locked.join(", ")} FROM ${role.rolname}`,
+    );
+    await sql.unsafe(
+      `REVOKE ALL ON SEQUENCE orders_id_seq, entitlements_id_seq FROM ${role.rolname}`,
+    );
+  }
+  await expireInvitations(api);
   await migrateLegacyGrants(api);
   return api;
 }

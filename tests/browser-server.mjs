@@ -35,6 +35,7 @@ const app = createApp({
     googleClientSecret: "browser-test",
     redirectUri: "http://localhost:4173/api/auth/google/callback",
     adminEmails: "owner@example.com",
+    ownerGoogleSub: "owner",
   },
 });
 const fixture = express();

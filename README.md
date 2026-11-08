@@ -12,7 +12,7 @@ A bilingual Mongolian/English IELTS, TOEFL and SAT study website built from the 
 - Listening uses the supplied scripts, with optional device-generated read-aloud voices. English adaptations accompany the original Mongolian IELTS listening scripts. Voice/microphone availability depends on the browser; recording needs HTTPS or localhost.
 - Three free study guides, presented as lessons inside the website, with the original Mongolian text and English introductions. All six source PDFs are used; PDFs are never served or embedded in the site.
 - Google OAuth login, persistent sessions and personal result history.
-- Per-exam access requests and an admin page to approve, decline or revoke access. No bank API, checkout or payment processing is configured.
+- Per-exam access requests and an admin page to approve, decline or revoke access. A Khan Bank credit SMS can confirm an existing unpaid order when `SMS_WEBHOOK_TOKEN` is set. See [SMS payments](docs/sms-payments.md). Manual approval stays available.
 
 The full-test option combines **all sections of a numbered practice set**. These are the shorter sets in the PDFs, not official full-length or adaptive exam simulations. The two separate bonus full-length tests remain outside the interactive library. There are no supplied audio recordings, automatic essay/speaking grading or official scaled scores. Original source answer keys have a few ambiguities; see [content notes](content/README.md).
 
@@ -55,7 +55,7 @@ The server verifies Google ID tokens and verified email, checks OAuth state and 
 
 ## Manual access / Khan Bank later
 
-A student signs in and requests access for one exam. The request does not charge them and does not grant access. You arrange payment separately, verify it yourself, and approve the correct email and exam in `/admin`. Revoking access immediately blocks new test loads and results for that exam. An audit table records approvals, declines and revocations. There is deliberately no fabricated bank account, price or automatic payment confirmation.
+A student signs in, creates an order, and pays by bank transfer. Manual confirmation in `/admin` still opens access. A Khan Bank credit notification can confirm that same unpaid order automatically. Details, the webhook token, and rollback steps are in [docs/sms-payments.md](docs/sms-payments.md). This is not an OTP forwarder. Revoking access immediately blocks new test loads and results. An audit table records approvals, declines, revocations, and SMS matches.
 
 ## Production
 

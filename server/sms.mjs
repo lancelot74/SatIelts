@@ -1,4 +1,10 @@
+import { timingSafeEqual } from "node:crypto";
 import { payment } from "../src/config/payment.js";
+
+// Khan Bank SMS is not cryptographically authenticated. A caller who knows
+// SMS_WEBHOOK_TOKEN can submit any text. Access is granted only when that
+// text matches an unpaid order's code and integer amount. The balance
+// (ULDEGDEL) is never payment authority.
 
 const accountPattern = /Tany\s+(\d)\*+(\d{4})\s+dansand/i;
 const incomingPattern = /ORLOGO:\s*([\d,]+(?:\.\d{1,2})?)\s*MNT/i;
@@ -23,6 +29,24 @@ function tugrug(raw) {
     ? cleaned.split(".")[1].replace(/0+$/, "")
     : "";
   return { amount: Math.trunc(amount), fractional: fractional.length > 0 };
+}
+
+export const SMS_TEXT_MAX = 2000;
+
+export function tokenMatches(header, secret) {
+  if (typeof secret !== "string" || secret.length === 0) return false;
+  if (typeof header !== "string" || header.length === 0) return false;
+  const provided = Buffer.from(header);
+  const expected = Buffer.from(secret);
+  if (provided.length !== expected.length) return false;
+  return timingSafeEqual(provided, expected);
+}
+
+export function phoneReceivedAt(value) {
+  if (typeof value !== "string" || value.length === 0 || value.length > 40)
+    return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? value : null;
 }
 
 export function orderCodeIn(note) {

@@ -42,6 +42,10 @@ export const strings = {
     friendEmails: "Two friends' Gmail addresses",
     confirmPayment: "Confirm payment",
     approveNote: "How was this payment confirmed?",
+    unmatchedSms: "Unmatched bank SMS",
+    smsDismiss: "Dismiss",
+    smsLink: "Link to order",
+    smsLinkCode: "Order code (ES-1234)",
     selfReview: "Self-review",
     reviewGuidance: "Review guidance",
     selfReviewTasks: "tasks for self-review",
@@ -339,6 +343,22 @@ export const strings = {
     approve: "Approve",
     reject: "Decline",
     revoke: "Revoke access",
+    approveWeek: "7 days",
+    approveMonth: "30 days",
+    paidUntil: "Access until",
+    sessionsTitle: "Signed-in browsers",
+    thisSession: "This browser",
+    signOutOthers: "Sign out other browsers",
+    sessionGoogle:
+      "Signing out of Google does not end these browsers. This list is the control the site has. A network label is approximate and can be wrong on a VPN, mobile data, or a shared network. It never locks the account.",
+    excessLogin:
+      "A new sign-in ended the oldest browser. This account can stay signed in on 3 browsers.",
+    unusualPlace:
+      "A sign-in used a different approximate network. This can happen with a VPN, mobile data, or a shared network. The account was not locked.",
+    revokeRenew:
+      "Access from this group payment was revoked. Make a new payment to renew access.",
+    revokeKept:
+      "Access from this group payment was revoked. A separate purchase is still valid.",
     confirmRevoke: "Revoke this learner’s access to this exam?",
     cancel: "Cancel",
     learner: "Learner",
@@ -411,6 +431,10 @@ export const strings = {
     friendEmails: "Хоёр найзын Gmail хаяг",
     confirmPayment: "Төлбөр баталгаажуулах",
     approveNote: "Төлбөрийг яаж баталгаажуулсан бэ?",
+    unmatchedSms: "Таараагүй банкны мессеж",
+    smsDismiss: "Хаах",
+    smsLink: "Захиалгатай холбох",
+    smsLinkCode: "Захиалгын код (ES-1234)",
     selfReview: "Өөрийгөө үнэлэх",
     reviewGuidance: "Өөрийгөө шалгах зөвлөмж",
     selfReviewTasks: "өөрөө үнэлэх даалгавар",
@@ -700,6 +724,22 @@ export const strings = {
     approve: "Зөвшөөрөх",
     reject: "Татгалзах",
     revoke: "Эрх цуцлах",
+    approveWeek: "7 хоног",
+    approveMonth: "30 хоног",
+    paidUntil: "Эрх дуусах",
+    sessionsTitle: "Нэвтэрсэн хөтөч",
+    thisSession: "Энэ хөтөч",
+    signOutOthers: "Бусад хөтчийг гаргах",
+    sessionGoogle:
+      "Google-ээс гарснаар эдгээр хөтөч гарахгүй. Энэ жагсаалт л сайтаас гаргана. Сүлжээний тэмдэг ойролцоо бөгөөд VPN, гар утас, нийтийн сүлжээнд буруу байж болно. Бүртгэлийг түгжихгүй.",
+    excessLogin:
+      "Шинэ нэвтрэлт хамгийн өмнөх хөтчийг гаргалаа. Нэг бүртгэл 3 хөтөч дээр нэвтэртэй байж болно.",
+    unusualPlace:
+      "Нэвтрэлт өөр ойролцоо сүлжээнээс ирлээ. VPN, гар утас, нийтийн сүлжээнд ингэдэг. Бүртгэл түгжигдээгүй.",
+    revokeRenew:
+      "Энэ бүлгийн төлбөрийн эрх цуцлагдлаа. Үргэлжлүүлэх бол дахин төлнө үү.",
+    revokeKept:
+      "Энэ бүлгийн төлбөрийн эрх цуцлагдлаа. Өөр төлбөрийн эрх хэвээр байна.",
     confirmRevoke: "Энэ суралцагчийн шалгалтын эрхийг цуцлах уу?",
     cancel: "Болих",
     learner: "Суралцагч",

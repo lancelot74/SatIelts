@@ -4,7 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DOWNLOADS = Path.home() / "Downloads"
-MEDIA = ROOT / "public" / "media"
+MEDIA = ROOT / "private" / "media"
 OUT = ROOT / "content" / "full-length.json"
 NOTE = "Энэ шинэ сорилын асуулт англи хэл дээр."
 

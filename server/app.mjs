@@ -22,14 +22,26 @@ import {
   testSummary,
 } from "./tests.mjs";
 import { fullModes, fullSetNumbers, fullVariants } from "./full.mjs";
-import { createOrder, activateOrder, activeEntitlement, linkFriendEntitlements } from "./orders.mjs";
+import { createOrder, activateOrder, activeEntitlement, linkFriendEntitlements, grantTimedAccess, revokeOrder } from "./orders.mjs";
+import { tokenMatches } from "./sms.mjs";
+import { ingestSms, linkSmsEvent, noteSmsHit } from "./sms-ingest.mjs";
+import {
+  coarseNetwork,
+  deviceLabel,
+  listNotices,
+  listSessions,
+  openLogin,
+  revokeOtherSessions,
+  revokeSession,
+  touchSession,
+} from "./sessions.mjs";
+import { mediaTarget, sendMedia } from "./media.mjs";
 const CANONICAL_ORIGIN = "https://eightsteppe.org";
 const ALIAS_HOSTS = new Set([
   "eightsteppe.com",
   "www.eightsteppe.com",
   "www.eightsteppe.org",
 ]);
-const ALL_EXAMS = ["ielts", "toefl", "sat"];
 const PLAN_CODES = new Set(["week", "month", "week-3", "month-3"]);
 const random = () => randomBytes(32).toString("base64url");
 const asNumber = (value) => (value == null ? value : Number(value));
@@ -73,12 +85,7 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
   const authAvailable = Boolean(
     config.googleClientId && config.googleClientSecret,
   );
-  const adminEmails = new Set(
-    (config.adminEmails ?? "")
-      .split(",")
-      .map((s) => s.trim().toLowerCase())
-      .filter(Boolean),
-  );
+  const ownerSub = String(config.ownerGoogleSub || "");
   if (config.trustProxy) app.set("trust proxy", 1);
   app.disable("x-powered-by");
   app.use((req, res, next) => {
@@ -105,9 +112,7 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
     }),
   );
   app.use(express.json({ limit: "1mb" }));
-  app.use(
-    "/api",
-    session({
+  const sessionMiddleware = session({
       name: "studyroom.sid",
       secret: config.sessionSecret,
       store: new SqliteSessionStore(db),
@@ -119,17 +124,28 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
         secure: Boolean(config.production),
         maxAge: 7 * 86400000,
       },
-    }),
-  );
-  app.use("/api", async (req, res, next) => {
+    });
+  app.use("/api", sessionMiddleware);
+  app.use("/media", sessionMiddleware);
+  const attachUser = async (req, res, next) => {
     try {
     res.set("Cache-Control", "private, no-store");
+    if (
+      req.method === "POST" &&
+      req.originalUrl.split("?")[0].replace(/\/+$/, "") === "/api/payments/sms"
+    )
+      return next();
     req.user = req.session.userId
-      ? await db.get("SELECT id,email,name FROM users WHERE id=?", [
+      ? await db.get("SELECT id,email,name,google_sub FROM users WHERE id=?", [
           req.session.userId,
         ])
       : null;
-    req.isAdmin = !!req.user && adminEmails.has(req.user.email.toLowerCase());
+    if (req.user && !(await touchSession(db, req.sessionID, req.user.id, now()))) {
+      req.user = null;
+      await new Promise((resolve) => req.session.destroy(() => resolve()));
+    }
+    req.isAdmin = Boolean(ownerSub) && req.user?.google_sub === ownerSub;
+    if (!req.session) return next();
     if (!req.session.csrf) req.session.csrf = random();
     if (!["GET", "HEAD", "OPTIONS"].includes(req.method)) {
       if (
@@ -142,7 +158,9 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
     } catch (error) {
       next(error);
     }
-  });
+  };
+  app.use("/api", attachUser);
+  app.use("/media", attachUser);
   const login = (req, res, next) =>
     req.user ? next() : res.status(401).json({ error: "login_required" });
   const admin = (req, res, next) =>
@@ -154,11 +172,7 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
     Boolean(
       req.user &&
       examById(exam) &&
-      ((await activeEntitlement(db, req.user, now())) ||
-        (await db.get(
-          "SELECT 1 AS ok FROM grants WHERE user_id=? AND exam=?",
-          [req.user.id, exam],
-        ))),
+      (await activeEntitlement(db, req.user, now())),
     );
   const authorizeTest = async (req, res, next) => {
     try {
@@ -192,21 +206,23 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
     const entitlement = req.user
       ? await activeEntitlement(db, req.user, now())
       : null;
-    const grantRows = req.user
-      ? (
-          await db.all("SELECT exam FROM grants WHERE user_id=?", [
-            req.user.id,
-          ])
-        ).map((x) => x.exam)
-      : [];
     res.json({
-      user: req.user ? { ...req.user, isAdmin: req.isAdmin } : null,
-      csrf: req.session.csrf,
+      user: req.user
+        ? {
+            id: req.user.id,
+            email: req.user.email,
+            name: req.user.name,
+            isAdmin: req.isAdmin,
+          }
+        : null,
+      csrf: req.session?.csrf,
       authAvailable,
-      grants: entitlement ? ["ielts", "toefl", "sat"] : grantRows,
+      grants: entitlement ? ["ielts", "toefl", "sat"] : [],
       access: entitlement
         ? { active: true, endsAt: Number(entitlement.ends_at) }
         : { active: false, endsAt: null },
+      sessions: req.user ? await listSessions(db, req.user.id, req.sessionID) : [],
+      notices: req.user ? await listNotices(db, req.user) : [],
       orders: req.user
         ? await db.all(
             "SELECT code,plan,group_size,amount_mnt,status,expires_at,paid_at FROM orders WHERE user_id=? ORDER BY created_at DESC",
@@ -348,12 +364,20 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
       const user = await db.get("SELECT id,email FROM users WHERE google_sub=?", [
         profile.sub,
       ]);
-      await linkFriendEntitlements(db, user);
+      await linkFriendEntitlements(db, user, now());
       req.session.regenerate((err) => {
         if (err) return res.redirect("/login?error=sign_in_failed");
         req.session.userId = user.id;
         req.session.csrf = random();
-        req.session.save((error) => {
+        openLogin(db, {
+          sid: req.sessionID,
+          userId: user.id,
+          now: now(),
+          label: deviceLabel(req.get("user-agent")),
+          network: coarseNetwork(req.ip),
+        })
+          .then(() =>
+            req.session.save((error) => {
           if (error) return res.redirect("/login?error=sign_in_failed");
           const checkout = `/checkout?plan=${pending.plan}&group=${pending.group === "3" ? "3" : "1"}`;
           const target = String(pending.next || "").startsWith("/checkout")
@@ -362,24 +386,32 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
               ? checkout
               : pending.next;
           res.redirect(target);
-        });
+            }),
+          )
+          .catch(() => res.redirect("/login?error=sign_in_failed"));
       });
     } catch {
       res.redirect("/login?error=sign_in_failed");
     }
   });
-  app.post("/api/logout", (req, res) =>
-    req.session.destroy((err) => {
-      if (err) return res.status(500).json({ error: "server_error" });
-      res
-        .clearCookie("studyroom.sid", {
-          httpOnly: true,
-          sameSite: "lax",
-          secure: Boolean(config.production),
-        })
-        .json({ ok: true });
-    }),
-  );
+  app.post("/api/logout", (req, res) => {
+    const sid = req.sessionID;
+    db.run("DELETE FROM user_sessions WHERE sid=?", [sid])
+      .catch(() => {})
+      .finally(() => {
+        if (!req.session) return res.json({ ok: true });
+        req.session.destroy((err) => {
+          if (err) return res.status(500).json({ error: "server_error" });
+          res
+            .clearCookie("studyroom.sid", {
+              httpOnly: true,
+              sameSite: "lax",
+              secure: Boolean(config.production),
+            })
+            .json({ ok: true });
+        });
+      });
+  });
   app.get("/api/tests/:exam/:number", authorizeTest, (req, res) => {
     const test = getTest(req.params.exam, req.params.number);
     res.json(testSummary(test));
@@ -615,6 +647,63 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
       next(error);
     }
   });
+  app.post("/api/payments/sms", async (req, res) => {
+    try {
+      const allowed = await noteSmsHit(db, req.ip || "unknown", now());
+      if (!allowed)
+        return res.status(429).json({ ok: false, error: "rate_limited" });
+      if (!tokenMatches(req.get("x-sms-token"), config.smsWebhookToken))
+        return res.status(401).json({ ok: false, error: "unauthorized" });
+      const payload = req.body && typeof req.body === "object" ? req.body : {};
+      if (JSON.stringify(payload).length > 4000)
+        return res.status(400).json({ ok: false, error: "invalid_body" });
+      const result = await ingestSms(db, {
+        text: payload.text,
+        receivedAt: payload.received_at,
+        now: now(),
+      });
+      res.status(result.statusCode).json(result.body);
+    } catch (error) {
+      console.error("SMS ingest failed:", error.name);
+      res.status(500).json({ ok: false, error: "internal" });
+    }
+  });
+  app.post("/api/admin/sms/dismiss", admin, async (req, res, next) => {
+    try {
+      const note = String(req.body?.note || "").trim();
+      const id = String(req.body?.id || "");
+      if (note.length < 3 || !id)
+        return res.status(400).json({ error: "note_required" });
+      const updated = await db.get(
+        "UPDATE sms_payment_events SET status='dismissed', review_note=? WHERE id=? AND status IN ('unmatched','rejected') RETURNING id",
+        [note, id],
+      );
+      if (!updated) return res.status(400).json({ error: "invalid_status" });
+      res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+  app.post("/api/admin/sms/link", admin, async (req, res, next) => {
+    try {
+      const note = String(req.body?.note || "").trim();
+      const id = String(req.body?.id || "");
+      const code = String(req.body?.code || "").trim().toUpperCase();
+      if (note.length < 3 || !id || !/^ES-\d{4,5}$/.test(code))
+        return res.status(400).json({ error: "invalid_request" });
+      const result = await linkSmsEvent(db, {
+        id,
+        code,
+        note,
+        actorId: req.user.id,
+        now: now(),
+      });
+      if (result.error) return res.status(400).json(result);
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  });
   app.post(
     "/api/access-requests",
     login,
@@ -626,14 +715,7 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
       if (exam === "all") {
         if (!PLAN_CODES.has(plan))
           return res.status(400).json({ error: "invalid_plan" });
-        const owned = new Set(
-          (
-            await db.all("SELECT exam FROM grants WHERE user_id=?", [
-              req.user.id,
-            ])
-          ).map((row) => row.exam),
-        );
-        if (ALL_EXAMS.every((id) => owned.has(id)))
+        if (await activeEntitlement(db, req.user, now()))
           return res.json({ status: "approved" });
       } else if (!examById(exam)) {
         return res.status(400).json({ error: "invalid_exam" });
@@ -659,9 +741,33 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
       grants: await db.all(
         "SELECT g.*,u.email,u.name FROM grants g JOIN users u ON g.user_id=u.id ORDER BY g.created_at DESC",
       ),
-      orders: await db.all(
-        "SELECT o.*,u.email,u.name FROM orders o JOIN users u ON u.id=o.user_id ORDER BY o.created_at ASC",
+      access: await db.all(
+        `SELECT e.id, e.user_id, e.email, e.ends_at, e.order_id, u.name, o.code
+         FROM entitlements e
+         LEFT JOIN users u ON u.id=e.user_id
+         LEFT JOIN orders o ON o.id=e.order_id
+         WHERE e.ends_at>?
+         ORDER BY e.ends_at`,
+        [now()],
       ),
+      orders: await db.all(
+        `SELECT o.*,u.email,u.name,
+           (SELECT MAX(ends_at) FROM entitlements e WHERE e.order_id=o.id) AS ends_at
+         FROM orders o JOIN users u ON u.id=o.user_id ORDER BY o.created_at ASC`,
+      ),
+      sms: (
+        await db.all(
+          `SELECT id, account_masked, amount_mnt, utga, order_code, server_received_at, status, unmatched_reason
+           FROM sms_payment_events
+           WHERE status IN ('unmatched','rejected')
+           ORDER BY created_at DESC
+           LIMIT 100`,
+        )
+      ).map((row) => ({
+        ...row,
+        amount_mnt: row.amount_mnt == null ? null : Number(row.amount_mnt),
+        server_received_at: Number(row.server_received_at),
+      })),
     });
     } catch (error) {
       next(error);
@@ -669,41 +775,57 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
   });
   app.post("/api/admin/access", admin, async (req, res, next) => {
     try {
-    const { userId, exam, action } = req.body;
-    const covered = exam === "all" ? ALL_EXAMS : [exam];
+    const userId = Number(req.body?.userId);
+    const { exam, action } = req.body;
     if (
       !Number.isInteger(userId) ||
-      (exam !== "all" && !examById(exam)) ||
       !["approve", "revoke", "reject"].includes(action) ||
+      (action !== "approve" && exam && exam !== "all" && !examById(exam)) ||
       !(await db.get("SELECT id FROM users WHERE id=?", [userId]))
     )
       return res.status(400).json({ error: "invalid_request" });
+    const note = String(req.body?.note || "").trim();
+    if (action !== "reject" && note.length < 3)
+      return res.status(400).json({ error: "note_required" });
+    if (action === "approve") {
+      const granted = await db.transaction((tx) =>
+        grantTimedAccess(tx, {
+          userId,
+          days: Number(req.body?.days),
+          actorId: req.user.id,
+          now: now(),
+          note,
+        }),
+      );
+      if (granted.error) return res.status(400).json(granted);
+      await db.run(
+        "UPDATE access_requests SET status='approved' WHERE user_id=?",
+        [userId],
+      );
+      return res.json({ ok: true, endsAt: granted.endsAt });
+    }
     await db.transaction(async (tx) => {
-      if (action === "approve") {
-        for (const id of covered)
+      if (action === "revoke") {
+        const orders = await tx.all(
+          "SELECT id FROM orders WHERE user_id=? AND status='paid'",
+          [userId],
+        );
+        await tx.run("DELETE FROM entitlements WHERE user_id=?", [userId]);
+        for (const order of orders) {
+          await tx.run("DELETE FROM entitlements WHERE order_id=?", [order.id]);
           await tx.run(
-            "INSERT INTO grants (user_id,exam,granted_by) VALUES (?,?,?) ON CONFLICT(user_id,exam) DO UPDATE SET granted_by=excluded.granted_by",
-            [userId, id, req.user.id],
+            "UPDATE orders SET status='revoked' WHERE id=? AND status='paid'",
+            [order.id],
           );
-      } else if (action === "revoke") {
-        if (exam === "all") {
-          await tx.run("DELETE FROM entitlements WHERE user_id=?", [userId]);
-          await tx.run("DELETE FROM grants WHERE user_id=?", [userId]);
-        } else {
-          for (const id of covered)
-            await tx.run("DELETE FROM grants WHERE user_id=? AND exam=?", [
-              userId,
-              id,
-            ]);
         }
       }
       await tx.run(
         "UPDATE access_requests SET status=? WHERE user_id=? AND exam=?",
-        [action === "approve" ? "approved" : "rejected", userId, exam],
+        [action === "approve" ? "approved" : "rejected", userId, exam || "all"],
       );
       await tx.run(
-        "INSERT INTO audit (actor_id,user_id,exam,action) VALUES (?,?,?,?)",
-        [req.user.id, userId, exam, action],
+        "INSERT INTO audit (actor_id,user_id,exam,action,detail) VALUES (?,?,?,?,?)",
+        [req.user.id, userId, exam || "all", action, JSON.stringify({ note })],
       );
     });
     res.json({ ok: true });
@@ -711,6 +833,61 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
       next(error);
     }
   });
+  app.post("/api/admin/orders/revoke", admin, async (req, res, next) => {
+    try {
+      const note = String(req.body?.note || "").trim();
+      if (note.length < 3) return res.status(400).json({ error: "note_required" });
+      const result = await revokeOrder(db, {
+        code: String(req.body?.code || ""),
+        actorId: req.user.id,
+        now: now(),
+        note,
+      });
+      if (result.error) return res.status(400).json(result);
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  });
+  app.post("/api/sessions/revoke", login, async (req, res, next) => {
+    try {
+      const result = await revokeSession(db, {
+        userId: req.user.id,
+        sid: req.sessionID,
+        hash: String(req.body?.id || ""),
+      });
+      if (result.error) return res.status(400).json(result);
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  });
+  app.post("/api/sessions/others", login, async (req, res, next) => {
+    try {
+      res.json(
+        await revokeOtherSessions(db, { userId: req.user.id, sid: req.sessionID }),
+      );
+    } catch (error) {
+      next(error);
+    }
+  });
+  const serveMedia = async (req, res, next) => {
+    try {
+      if (!req.user)
+        return res.status(401).json({ error: "login_required" });
+      if (!(await hasAccess(req, req.params.exam)))
+        return res.status(403).json({ error: "access_required" });
+      const target = mediaTarget(req.params.exam, req.params.set, req.params.file);
+      if (!target || !fs.existsSync(target)) return res.status(404).end();
+      sendMedia(req, res, target);
+    } catch (error) {
+      next(error);
+    }
+  };
+  app.get("/media/:exam/:set/:file", serveMedia);
+  app.head("/media/:exam/:set/:file", serveMedia);
+  app.get("/api/media/:exam/:set/:file", serveMedia);
+  app.head("/api/media/:exam/:set/:file", serveMedia);
   app.get("/api/guides/:exam", (req, res) => {
     if (!examById(req.params.exam))
       return res.status(404).json({ error: "not_found" });
@@ -731,8 +908,11 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
     );
   }
   app.use((err, req, res, _next) => {
-    if (err.type === "entity.parse.failed")
+    if (err.type === "entity.parse.failed") {
+      if (req.originalUrl.split("?")[0] === "/api/payments/sms")
+        return res.status(400).json({ ok: false, error: "invalid_body" });
       return res.status(400).json({ error: "invalid_json" });
+    }
     console.error("Request failed:", err.name);
     res.status(500).json({ error: "server_error" });
   });

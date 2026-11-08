@@ -7,7 +7,14 @@ export const payment = {
     accountLast4: "0218",
     holder: "Azbileg Uurtsaikh",
   },
-  order: { codePrefix: "ES-", codeDigits: 4, ttlHours: 24, lateGraceHours: 72 },
+  order: {
+    codePrefix: "ES-",
+    codeDigits: 4,
+    ttlHours: 24,
+    // Not enforced. No late cutoff was approved. The owner may still confirm
+    // an expired order after checking the transfer. SMS never does that itself.
+    lateGraceHours: null,
+  },
   sms: {
     format: "khanbank-latin-v1",
     senderIds: [],

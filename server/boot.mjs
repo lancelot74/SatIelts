@@ -45,6 +45,8 @@ export async function boot() {
         process.env.GOOGLE_REDIRECT_URI ||
         `${origin}/api/auth/google/callback`,
       adminEmails: process.env.ADMIN_EMAILS,
+      ownerGoogleSub: process.env.OWNER_GOOGLE_SUB || "",
+      smsWebhookToken: process.env.SMS_WEBHOOK_TOKEN || "",
       trustProxy: process.env.TRUST_PROXY === "1" || vercel,
     },
   });

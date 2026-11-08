@@ -11,12 +11,16 @@ export default defineConfig({
         "**/.env*",
         "**/.git/**",
         "**/content/**",
+        "**/private/**",
         "**/server/**",
         "**/.data/**",
         "**/scripts/**",
         "**/tests/**",
       ],
     },
-    proxy: { "/api": "http://127.0.0.1:3001" },
+    proxy: {
+      "/api": "http://127.0.0.1:3001",
+      "/media": "http://127.0.0.1:3001",
+    },
   },
 });

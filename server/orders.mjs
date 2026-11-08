@@ -1,5 +1,6 @@
 import { payment } from "../src/config/payment.js";
 import { priceFor as quote } from "../src/config/pricing.js";
+import { addRevokeNotice } from "./sessions.mjs";
 
 const DAY = 86400000;
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -45,44 +46,117 @@ export async function activeEntitlement(db, user, now) {
   return db.get(
     `SELECT id, ends_at, source FROM entitlements
      WHERE starts_at<=? AND ends_at>?
-       AND (user_id=? OR (user_id IS NULL AND lower(email)=?))
+       AND (
+         user_id=?
+         OR (user_id IS NULL AND lower(email)=? AND created_at>=?)
+       )
      ORDER BY ends_at DESC`,
-    [now, now, user.id, String(user.email).toLowerCase()],
+    [now, now, user.id, String(user.email).toLowerCase(), now - 30 * DAY],
   );
 }
 
-export async function linkFriendEntitlements(db, user) {
+const INVITE_MS = 30 * DAY;
+
+export async function linkFriendEntitlements(db, user, now = Date.now()) {
   await db.run(
-    "UPDATE entitlements SET user_id=? WHERE user_id IS NULL AND lower(email)=?",
-    [user.id, String(user.email).toLowerCase()],
+    "UPDATE entitlements SET user_id=? WHERE user_id IS NULL AND lower(email)=? AND created_at>=?",
+    [user.id, String(user.email).toLowerCase(), now - INVITE_MS],
   );
 }
 
-export async function migrateLegacyGrants(db, now = Date.now()) {
-  const rows = await db.all(
-    "SELECT DISTINCT g.user_id AS id, u.email AS email FROM grants g JOIN users u ON u.id=g.user_id",
+export async function expireInvitations(db, now = Date.now()) {
+  await db.run(
+    "DELETE FROM entitlements WHERE user_id IS NULL AND created_at<?",
+    [now - INVITE_MS],
   );
-  let created = 0;
+}
+
+// Leftover grants are not access. This does not insert, widen, or delete rows.
+export async function migrateLegacyGrants(db) {
+  const row = await db.get("SELECT COUNT(*) AS n FROM grants");
+  return { leftoverGrants: Number(row?.n || 0) };
+}
+
+export async function grantTimedAccess(db, { userId, days, actorId, now, note }) {
+  if (days !== 7 && days !== 30) return { error: "invalid_duration" };
+  const user = await db.get("SELECT id,email FROM users WHERE id=?", [userId]);
+  if (!user) return { error: "not_found" };
+  const current = await db.get(
+    "SELECT ends_at FROM entitlements WHERE user_id=? AND ends_at>? ORDER BY ends_at DESC",
+    [user.id, now],
+  );
+  const start = Math.max(now, Number(current?.ends_at || 0));
+  const end = start + days * DAY;
+  await db.run(
+    "INSERT INTO entitlements (user_id,email,starts_at,ends_at,source,created_by,created_at) VALUES (?,?,?,?,?,?,?)",
+    [user.id, user.email.toLowerCase(), start, end, "manual", actorId, now],
+  );
+  await db.run(
+    "INSERT INTO audit (actor_id,user_id,exam,action,detail) VALUES (?,?,?,?,?)",
+    [
+      actorId,
+      user.id,
+      "all",
+      "manual_grant",
+      JSON.stringify({ days, note: String(note || "").slice(0, 200) }),
+    ],
+  );
+  return { endsAt: end };
+}
+
+export async function revokeOrder(db, { code, actorId, now, note }) {
+  const order = await db.get("SELECT * FROM orders WHERE code=?", [code]);
+  if (!order || order.status !== "paid") return { error: "invalid_status" };
+  const rows = await db.all(
+    "SELECT user_id,email FROM entitlements WHERE order_id=?",
+    [order.id],
+  );
+  await db.run("DELETE FROM entitlements WHERE order_id=?", [order.id]);
+  const claimed = await db.get(
+    "UPDATE orders SET status='revoked' WHERE id=? AND status='paid' RETURNING id",
+    [order.id],
+  );
+  if (!claimed) return { error: "invalid_status" };
+  const payer = await db.get("SELECT id,email FROM users WHERE id=?", [order.user_id]);
+  const still = await db.get(
+    "SELECT 1 AS ok FROM entitlements WHERE user_id=? AND ends_at>?",
+    [payer.id, now],
+  );
+  await addRevokeNotice(db, {
+    userId: payer.id,
+    separate: Boolean(still),
+    now,
+  });
   for (const row of rows) {
-    const existing = await db.get(
-      "SELECT 1 AS ok FROM entitlements WHERE user_id=? AND source='legacy'",
-      [row.id],
-    );
-    if (existing) continue;
-    await db.run(
-      "INSERT INTO entitlements (user_id,email,starts_at,ends_at,source,created_at) VALUES (?,?,?,?,?,?)",
-      [
-        row.id,
-        String(row.email).toLowerCase(),
+    if (row.user_id && Number(row.user_id) !== Number(payer.id)) {
+      const friendStill = await db.get(
+        "SELECT 1 AS ok FROM entitlements WHERE user_id=? AND ends_at>?",
+        [row.user_id, now],
+      );
+      await addRevokeNotice(db, {
+        userId: row.user_id,
+        separate: Boolean(friendStill),
         now,
-        now + 30 * DAY,
-        "legacy",
-        now,
-      ],
-    );
-    created += 1;
+      });
+    } else if (!row.user_id && row.email) {
+      await addRevokeNotice(db, { email: row.email, separate: false, now });
+    }
   }
-  return created;
+  await db.run(
+    "INSERT INTO audit (actor_id,user_id,exam,action,detail) VALUES (?,?,?,?,?)",
+    [
+      actorId,
+      payer.id,
+      "all",
+      "order_revoked",
+      JSON.stringify({
+        code: order.code,
+        amount: order.amount_mnt,
+        note: String(note || "").slice(0, 200),
+      }),
+    ],
+  );
+  return { ok: true };
 }
 
 function friendsOf(body, payer) {
@@ -137,12 +211,21 @@ export async function createOrder(db, user, body, now = Date.now()) {
   return { order: await db.get("SELECT * FROM orders WHERE code=?", [code]) };
 }
 
-export async function activateOrder(db, { code, actorId, now, note }) {
+export async function activateOrder(db, { code, actorId, now, note, source = "manual" }) {
   const order = await db.get("SELECT * FROM orders WHERE code=?", [code]);
   if (!order) return { error: "not_found" };
-  if (order.status === "paid") return { order };
+  if (order.status === "paid") return { order, alreadyPaid: true };
   if (!["awaiting_payment", "needs_review", "expired"].includes(order.status))
     return { error: "invalid_status" };
+  const claimed = await db.get(
+    "UPDATE orders SET status='paid', paid_at=?, note=? WHERE id=? AND status=? RETURNING id",
+    [now, note || null, order.id, order.status],
+  );
+  if (!claimed) {
+    const current = await db.get("SELECT * FROM orders WHERE id=?", [order.id]);
+    if (current?.status === "paid") return { order: current, alreadyPaid: true };
+    return { error: "invalid_status" };
+  }
   const user = await db.get("SELECT id,email FROM users WHERE id=?", [
     order.user_id,
   ]);
@@ -152,23 +235,31 @@ export async function activateOrder(db, { code, actorId, now, note }) {
   );
   const start = Math.max(now, Number(current?.ends_at || 0));
   const end = start + (order.plan === "week" ? 7 : 30) * DAY;
+  const entitlementSource = source === "sms" ? "sms" : "manual";
   await db.run(
     "INSERT INTO entitlements (user_id,email,starts_at,ends_at,source,order_id,created_by,created_at) VALUES (?,?,?,?,?,?,?,?)",
-    [user.id, user.email.toLowerCase(), start, end, "manual", order.id, actorId, now],
+    [user.id, user.email.toLowerCase(), start, end, entitlementSource, order.id, actorId, now],
   );
   for (const email of JSON.parse(order.friend_emails || "[]")) {
     await db.run(
       "INSERT INTO entitlements (user_id,email,starts_at,ends_at,source,order_id,created_by,created_at) VALUES (?,?,?,?,?,?,?,?)",
-      [null, email, now, end, "manual", order.id, actorId, now],
+      [null, email, now, end, entitlementSource, order.id, actorId, now],
     );
   }
   await db.run(
-    "UPDATE orders SET status='paid', paid_at=?, note=? WHERE id=?",
-    [now, note || null, order.id],
-  );
-  await db.run(
-    "INSERT INTO audit (actor_id,user_id,exam,action) VALUES (?,?,?,?)",
-    [actorId, user.id, "all", "manual_paid"],
+    "INSERT INTO audit (actor_id,user_id,exam,action,detail) VALUES (?,?,?,?,?)",
+    [
+      actorId,
+      user.id,
+      "all",
+      source === "sms" ? "sms_paid" : "manual_paid",
+      JSON.stringify({
+        code: order.code,
+        amount: order.amount_mnt,
+        note: String(note || "").slice(0, 200),
+        at: now,
+      }),
+    ],
   );
   return {
     order: await db.get("SELECT * FROM orders WHERE id=?", [order.id]),

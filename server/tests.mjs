@@ -197,8 +197,11 @@ export function publicTest(test) {
   return {
     ...test,
     questions: test.questions.map(
-      ({ answer, accepted, explanation, ...q }) => ({
+      ({ answer, accepted, explanation, passage, passageMn, speechText, ...q }) => ({
         ...q,
+        ...(q.section === "Listening"
+          ? {}
+          : { passage, passageMn, speechText }),
         answerForm: answerForm({ ...q, answer, accepted }),
       }),
     ),
