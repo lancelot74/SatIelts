@@ -17,21 +17,21 @@ CREATE TABLE IF NOT EXISTS orders (
   list_amount_mnt INTEGER NOT NULL,
   sale_applied INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'awaiting_payment',
-  expires_at INTEGER NOT NULL,
-  paid_at INTEGER,
+  expires_at BIGINT NOT NULL,
+  paid_at BIGINT,
   note TEXT,
-  created_at INTEGER NOT NULL
+  created_at BIGINT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS entitlements (
   id INTEGER PRIMARY KEY,
   user_id INTEGER,
   email TEXT NOT NULL,
-  starts_at INTEGER NOT NULL,
-  ends_at INTEGER NOT NULL,
+  starts_at BIGINT NOT NULL,
+  ends_at BIGINT NOT NULL,
   source TEXT NOT NULL,
   order_id INTEGER,
   created_by INTEGER,
-  created_at INTEGER NOT NULL
+  created_at BIGINT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS entitlements_user ON entitlements (user_id, ends_at);
 CREATE INDEX IF NOT EXISTS entitlements_email ON entitlements (email);

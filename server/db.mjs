@@ -107,29 +107,95 @@ const millisColumns = {
   entitlements: ["starts_at", "ends_at", "created_at"],
   orders: ["created_at", "expires_at", "paid_at"],
 };
+export const MILLIS_MIGRATION_ID = "2026-11-08-millis-bigint";
+// Transaction-scoped advisory lock. Session locks do not survive the pooler.
+export const MILLIS_ADVISORY_LOCK = 814763219;
 
-// Postgres INTEGER is int4. These columns store Date.now() milliseconds.
-// SQLite INTEGER is already 64-bit, so only the Postgres boot path widens them.
-export async function widenMillis(sql, table, columns) {
-  const allowed = millisColumns[table];
-  if (!allowed || columns.some((column) => !allowed.includes(column)))
-    throw new Error("Refusing to alter an unknown column");
-  const found = await sql`
-    select column_name, data_type
-    from information_schema.columns
-    where table_schema = 'public'
-      and table_name = ${table}
-      and column_name in ${sql(columns)}
-  `;
-  const narrow = found
-    .filter((row) => row.data_type === "integer")
-    .map((row) => row.column_name);
-  if (!narrow.length) return;
-  await sql.unsafe(
-    `ALTER TABLE ${table} ${narrow
-      .map((column) => `ALTER COLUMN ${column} TYPE bigint`)
-      .join(", ")}`,
-  );
+function timeoutMs(name, value, fallback) {
+  const parsed = Number(value ?? fallback);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 60000)
+    throw new Error(`invalid ${name}`);
+  return String(parsed);
+}
+
+async function integerMillis(tx) {
+  const left = [];
+  for (const [table, columns] of Object.entries(millisColumns)) {
+    const found = await tx`
+      select column_name, data_type
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name = ${table}
+        and column_name in ${tx(columns)}
+    `;
+    for (const column of columns) {
+      const row = found.find((item) => item.column_name === column);
+      if (!row || row.data_type !== "bigint") left.push(`public.${table}.${column}`);
+    }
+  }
+  return left;
+}
+
+// Existing databases created the payment clocks as int4. Fresh databases
+// create them as bigint. Boot still runs this so a missed manual step cannot
+// bring back error 22003. One advisory lock, a recheck, and a short timeout
+// keep concurrent cold starts from stacking ACCESS EXCLUSIVE rewrites.
+export async function widenMillis(sql, options = {}) {
+  const lock = timeoutMs("lock_timeout", options.lockTimeoutMs, 2000);
+  const statement = timeoutMs("statement_timeout", options.statementTimeoutMs, 8000);
+  const retries = Number(options.retries ?? 2);
+  let last;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await sql.begin(async (tx) => {
+        await tx.unsafe(
+          `select set_config('lock_timeout', '${lock}', true), set_config('statement_timeout', '${statement}', true)`,
+        );
+        await tx.unsafe(`select pg_advisory_xact_lock(${MILLIS_ADVISORY_LOCK})`);
+        await tx.unsafe(
+          `create table if not exists public.schema_migrations (
+             id text primary key,
+             applied_at timestamptz not null default now()
+           )`,
+        );
+        await tx.unsafe(
+          "alter table public.schema_migrations enable row level security",
+        );
+        for (const [table, columns] of Object.entries(millisColumns)) {
+          const found = await tx`
+            select column_name, data_type
+            from information_schema.columns
+            where table_schema = 'public'
+              and table_name = ${table}
+              and column_name in ${tx(columns)}
+          `;
+          const narrow = columns.filter((column) =>
+            found.some(
+              (row) => row.column_name === column && row.data_type === "integer",
+            ),
+          );
+          if (!narrow.length) continue;
+          await tx.unsafe(
+            `alter table public.${table} ${narrow
+              .map((column) => `alter column ${column} type bigint`)
+              .join(", ")}`,
+          );
+        }
+        const left = await integerMillis(tx);
+        if (left.length) throw new Error(`millis migration incomplete: ${left.join(", ")}`);
+        await tx.unsafe(
+          `insert into public.schema_migrations (id) values ('${MILLIS_MIGRATION_ID}') on conflict (id) do nothing`,
+        );
+        return { ok: true };
+      });
+    } catch (error) {
+      last = error;
+      if (attempt === retries || (error.code !== "55P03" && error.code !== "57014"))
+        throw error;
+      await new Promise((resolve) => setTimeout(resolve, 40 * (attempt + 1)));
+    }
+  }
+  throw last;
 }
 
 function queryApi(executor) {
@@ -170,6 +236,15 @@ export async function openPostgres(connectionString) {
       },
     },
   });
+  try {
+    return await initializePostgres(sql);
+  } catch (error) {
+    await sql.end({ timeout: 5 }).catch(() => {});
+    throw error;
+  }
+}
+
+async function initializePostgres(sql) {
   const schema = fs.readFileSync(
     new URL("./schema.postgres.sql", import.meta.url),
     "utf8",
@@ -193,10 +268,16 @@ export async function openPostgres(connectionString) {
     // set_config(..., true) is LOCAL to this transaction, so it stays on the
     // one pooler server connection and cannot leak into the next checkout.
     // A stuck FOR UPDATE then fails instead of holding the only client forever.
-    transaction: (fn) =>
+    transaction: (fn, options = {}) =>
       sql.begin(async (tx) => {
+        const lock = timeoutMs("lock_timeout", options.lockTimeoutMs, 2000);
+        const statement = timeoutMs(
+          "statement_timeout",
+          options.statementTimeoutMs,
+          8000,
+        );
         await tx.unsafe(
-          "select set_config('lock_timeout', '2000', true), set_config('statement_timeout', '8000', true)",
+          `select set_config('lock_timeout', '${lock}', true), set_config('statement_timeout', '${statement}', true)`,
         );
         return fn(queryApi(tx));
       }),
@@ -204,8 +285,7 @@ export async function openPostgres(connectionString) {
   };
   for (const statement of sqlStatements(paymentTables))
     await sql.unsafe(statement);
-  await widenMillis(sql, "entitlements", ["starts_at", "ends_at", "created_at"]);
-  await widenMillis(sql, "orders", ["created_at", "expires_at", "paid_at"]);
+  await widenMillis(sql);
   for (const statement of sqlStatements(smsTables))
     await sql.unsafe(statement);
   for (const statement of sqlStatements(sessionTables))
@@ -218,6 +298,7 @@ export async function openPostgres(connectionString) {
     "entitlements",
     "user_sessions",
     "account_notices",
+    "schema_migrations",
   ];
   for (const table of locked)
     await sql.unsafe(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`);

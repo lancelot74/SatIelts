@@ -90,32 +90,80 @@ async function addNotice(tx, { userId, email, kind, separate, now }) {
   );
 }
 
-export async function openLogin(db, { sid, userId, now, label, network }) {
+// Eviction is committed with the new row so concurrent logins cannot all
+// pass the cap. The caller restores evicted rows if the cookie save fails.
+export async function registerLogin(db, { sid, userId, now, label, network }) {
   const hash = sessionHash(sid);
   return db.transaction(async (tx) => {
     if (db.dialect === "postgres")
       await tx.get("SELECT id FROM users WHERE id=? FOR UPDATE", [userId]);
     const rows = await tx.all(
-      "SELECT sid, sid_hash, created_at, network FROM user_sessions WHERE user_id=? ORDER BY created_at ASC, sid_hash ASC",
+      "SELECT sid, sid_hash, created_at, last_seen, network, label FROM user_sessions WHERE user_id=? ORDER BY created_at ASC, sid_hash ASC",
       [userId],
     );
-    let dropped = 0;
+    const evicted = [];
     while (rows.length >= SESSION_CAP) {
       const oldest = rows.shift();
+      const saved = await tx.get(
+        "SELECT data, expires FROM sessions WHERE sid=?",
+        [oldest.sid],
+      );
+      evicted.push({
+        sid: oldest.sid,
+        sidHash: oldest.sid_hash,
+        createdAt: oldest.created_at,
+        lastSeen: oldest.last_seen,
+        network: oldest.network,
+        label: oldest.label,
+        data: saved?.data ?? null,
+        expires: saved?.expires ?? null,
+      });
       await tx.run("DELETE FROM sessions WHERE sid=?", [oldest.sid]);
       await tx.run("DELETE FROM user_sessions WHERE sid=?", [oldest.sid]);
-      dropped += 1;
     }
     await tx.run(
       "INSERT INTO user_sessions (sid_hash,sid,user_id,created_at,last_seen,label,network) VALUES (?,?,?,?,?,?,?)",
       [hash, sid, userId, now, now, label, network],
     );
-    if (dropped)
+    return {
+      evicted,
+      unusual: rows.some((row) => row.network && row.network !== network),
+    };
+  });
+}
+
+export async function cancelLoginRegistration(db, sid) {
+  await db.run("DELETE FROM user_sessions WHERE sid=?", [sid]);
+}
+
+export async function restoreEvictedSessions(db, userId, evicted) {
+  for (const row of evicted) {
+    if (row.data != null && row.expires != null)
+      await db.run(
+        "INSERT INTO sessions (sid,data,expires) VALUES (?,?,?) ON CONFLICT(sid) DO NOTHING",
+        [row.sid, row.data, row.expires],
+      );
+    await db.run(
+      "INSERT INTO user_sessions (sid_hash,sid,user_id,created_at,last_seen,label,network) VALUES (?,?,?,?,?,?,?) ON CONFLICT(sid) DO NOTHING",
+      [
+        row.sidHash,
+        row.sid,
+        userId,
+        row.createdAt,
+        row.lastSeen,
+        row.label || "Browser on computer",
+        row.network || "",
+      ],
+    );
+  }
+}
+
+export async function recordLoginNotices(db, { userId, now, evicted, unusual }) {
+  await db.transaction(async (tx) => {
+    if (evicted.length)
       await addNotice(tx, { userId, kind: "excess_login", separate: false, now });
-    const unusual = rows.some((row) => row.network && row.network !== network);
     if (unusual)
       await addNotice(tx, { userId, kind: "unusual_place", separate: false, now });
-    return { active: rows.length + 1 };
   });
 }
 

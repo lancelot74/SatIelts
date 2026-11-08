@@ -28,9 +28,12 @@ import { ingestSms, linkSmsEvent, noteSmsHit } from "./sms-ingest.mjs";
 import {
   coarseNetwork,
   deviceLabel,
+  cancelLoginRegistration,
   listNotices,
   listSessions,
-  openLogin,
+  recordLoginNotices,
+  registerLogin,
+  restoreEvictedSessions,
   revokeOtherSessions,
   revokeSession,
   touchSession,
@@ -116,6 +119,7 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
       name: "studyroom.sid",
       secret: config.sessionSecret,
       store: new SqliteSessionStore(db),
+      proxy: Boolean(config.trustProxy),
       resave: false,
       saveUninitialized: false,
       cookie: {
@@ -365,24 +369,49 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
         profile.sub,
       ]);
       await linkFriendEntitlements(db, user, now());
-      await new Promise((resolve, reject) => {
-        req.session.regenerate((err) => {
-          if (err) return reject(err);
-          req.session.userId = user.id;
-          req.session.csrf = random();
-          openLogin(db, {
-            sid: req.sessionID,
-            userId: user.id,
-            now: now(),
-            label: deviceLabel(req.get("user-agent")),
-            network: coarseNetwork(req.ip),
-          })
-            .then(() => {
-              req.session.save((error) => (error ? reject(error) : resolve()));
-            })
-            .catch(reject);
+      const network = coarseNetwork(req.ip);
+      const label = deviceLabel(req.get("user-agent"));
+      let registeredSid = null;
+      let registration = { evicted: [], unusual: false };
+      try {
+        await new Promise((resolve, reject) => {
+          req.session.regenerate((err) => (err ? reject(err) : resolve()));
         });
-      });
+        req.session.userId = user.id;
+        req.session.csrf = random();
+        registeredSid = req.sessionID;
+        registration = await registerLogin(db, {
+          sid: registeredSid,
+          userId: user.id,
+          now: now(),
+          label,
+          network,
+        });
+        await new Promise((resolve, reject) => {
+          req.session.save((error) => (error ? reject(error) : resolve()));
+        });
+      } catch (error) {
+        if (registeredSid)
+          await cancelLoginRegistration(db, registeredSid).catch(() => {});
+        if (registration.evicted.length)
+          await restoreEvictedSessions(db, user.id, registration.evicted).catch(() => {});
+        await new Promise((resolve) => {
+          if (!req.session) return resolve();
+          req.session.destroy(() => resolve());
+        });
+        res.clearCookie("studyroom.sid", {
+          httpOnly: true,
+          sameSite: "lax",
+          secure: Boolean(config.production),
+        });
+        throw error;
+      }
+      await recordLoginNotices(db, {
+        userId: user.id,
+        now: now(),
+        evicted: registration.evicted,
+        unusual: registration.unusual,
+      }).catch(() => {});
       const checkout = `/checkout?plan=${pending.plan}&group=${pending.group === "3" ? "3" : "1"}`;
       const target = String(pending.next || "").startsWith("/checkout")
         ? pending.next
