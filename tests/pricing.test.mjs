@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { offer, planCode, saleActive, SALE_END } from "../src/config/pricing.js";
 
 test("sale prices stack and then return to the friends rate", () => {
-  const during = offer(Date.parse("2026-11-11T23:00:00+08:00"));
+  const during = offer(Date.parse("2026-11-30T23:00:00+08:00"));
   assert.equal(during.sale, true);
   assert.equal(during.solo.week.price, 3500);
   assert.equal(during.solo.month.price, 10000);
@@ -14,10 +14,21 @@ test("sale prices stack and then return to the friends rate", () => {
   const after = offer(SALE_END);
   assert.equal(after.sale, false);
   assert.equal(saleActive(SALE_END), false);
+  assert.equal(after.solo.week.price, 7000);
   assert.equal(after.solo.month.price, 20000);
   assert.equal(after.friends.month.total, 48000);
   assert.equal(after.friends.week.each, 5600);
   assert.equal(planCode("month", "3"), "month-3");
   assert.equal(planCode("week", "1"), "week");
   assert.equal(planCode("year", "3"), null);
+});
+
+test("solo week is 3,500₮ before sale end and list price after", () => {
+  const before = offer(Date.parse("2026-11-15T12:00:00+08:00"));
+  assert.equal(before.sale, true);
+  assert.equal(before.solo.week.price, 3500);
+  const after = offer(Date.parse("2026-12-01T00:00:00+08:00"));
+  assert.equal(after.sale, false);
+  assert.equal(after.solo.week.price, 7000);
+  assert.equal(SALE_END, Date.parse("2026-12-01T00:00:00+08:00"));
 });

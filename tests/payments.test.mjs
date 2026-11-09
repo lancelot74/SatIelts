@@ -50,5 +50,5 @@ test("khan bank sms fixtures", () => {
   assert.equal(parseKhanSms("Hello, your package is waiting").parseStatus, "ignored_other");
   assert.equal(priceFor("month", 3, Date.parse("2026-11-01T00:00:00+08:00")).amount, 24000);
   assert.equal(priceFor("week", 1, Date.parse("2026-11-01T00:00:00+08:00")).amount, 3500);
-  assert.equal(priceFor("month", 1, Date.parse("2026-11-12T00:00:00+08:00")).amount, 20000);
+  assert.equal(priceFor("month", 1, Date.parse("2026-12-01T00:00:00+08:00")).amount, 20000);
 });

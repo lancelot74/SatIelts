@@ -114,6 +114,9 @@ test("prices ignore the client and access expires", async () => {
   await student.get("/api/tests/sat/1").expect(200);
   f.advance(8 * 86400000);
   await student.get("/api/tests/ielts/1").expect(403);
+  // Clock started 2026-11-06; after +2d and +8d it is still inside the sale
+  // that now ends 2026-12-01. Jump past SALE_END so list price applies.
+  f.advance(15 * 86400000);
   const later = (
     await post(student, "/api/orders", s.csrf, {
       plan: "month",

@@ -14,9 +14,9 @@ const config = {
   adminEmails: "owner@example.com",
   ownerGoogleSub: "owner",
 };
-function fixture() {
+function fixture(initialNow = Date.now()) {
   const db = openDatabase(":memory:");
-  let clock = Date.now(),
+  let clock = initialNow,
     pending;
   const oauthClient = {
     generateAuthUrl(opts) {
@@ -345,7 +345,8 @@ test("one plan approval unlocks IELTS, TOEFL, and SAT", async () => {
 });
 
 test("a bank order opens every exam after manual confirmation", async () => {
-  const f = fixture(),
+  // Freeze time inside the 50% sale so the order amount stays 3,500₮.
+  const f = fixture(Date.parse("2026-11-15T12:00:00+08:00")),
     student = f.agent(),
     owner = f.agent();
   const s = await login(student, "payer");
@@ -366,6 +367,19 @@ test("a bank order opens every exam after manual confirmation", async () => {
   await student.get("/api/tests/ielts/1").expect(200);
   await student.get("/api/tests/toefl/1").expect(200);
   await student.get("/api/tests/sat/1").expect(200);
+  f.db.close();
+});
+test("a bank order uses list price after the sale ends", async () => {
+  const f = fixture(Date.parse("2026-12-01T00:00:00+08:00")),
+    student = f.agent();
+  const s = await login(student, "payer");
+  const order = (
+    await mutate(student, "post", "/api/orders", s.csrf, {
+      plan: "week",
+      group: 1,
+    }).expect(200)
+  ).body;
+  assert.equal(order.amount, 7000);
   f.db.close();
 });
 test("CSRF, request validation and logout protect authenticated mutations", async () => {
