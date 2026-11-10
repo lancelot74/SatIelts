@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS account_notices (
   created_at BIGINT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS account_notices_user ON account_notices (user_id, created_at);
+CREATE INDEX IF NOT EXISTS account_notices_email_lower ON account_notices (lower(email), created_at);
 `;
 
 export function sessionHash(sid) {
@@ -86,7 +87,14 @@ async function addNotice(tx, { userId, email, kind, separate, now }) {
   if (recent) return;
   await tx.run(
     "INSERT INTO account_notices (id,user_id,email,kind,separate,created_at) VALUES (?,?,?,?,?,?)",
-    [randomUUID(), userId ?? null, email ? String(email).toLowerCase() : null, kind, separate ? 1 : 0, now],
+    [
+      randomUUID(),
+      userId ?? null,
+      email ? String(email).toLowerCase() : null,
+      kind,
+      separate ? 1 : 0,
+      now,
+    ],
   );
 }
 
@@ -131,9 +139,19 @@ export async function activateLogin(db, { sid, userId, now, network }) {
       dropped += 1;
     }
     if (dropped)
-      await addNotice(tx, { userId, kind: "excess_login", separate: false, now });
+      await addNotice(tx, {
+        userId,
+        kind: "excess_login",
+        separate: false,
+        now,
+      });
     if (others.some((row) => row.network && row.network !== network))
-      await addNotice(tx, { userId, kind: "unusual_place", separate: false, now });
+      await addNotice(tx, {
+        userId,
+        kind: "unusual_place",
+        separate: false,
+        now,
+      });
     return { active: others.length + 1, dropped };
   });
 }
@@ -146,7 +164,10 @@ export async function touchSession(db, sid, userId, now) {
   );
   if (!row) return false;
   if (now - Number(row.last_seen) > 60000)
-    await db.run("UPDATE user_sessions SET last_seen=? WHERE sid_hash=?", [now, hash]);
+    await db.run("UPDATE user_sessions SET last_seen=? WHERE sid_hash=?", [
+      now,
+      hash,
+    ]);
   return true;
 }
 
@@ -168,8 +189,12 @@ export async function listSessions(db, userId, sid) {
 
 export async function listNotices(db, user) {
   const rows = await db.all(
-    `SELECT id, kind, separate, created_at FROM account_notices
-     WHERE user_id=? OR (email IS NOT NULL AND lower(email)=lower(?))
+    `SELECT id, kind, separate, created_at FROM (
+       SELECT id, kind, separate, created_at FROM account_notices WHERE user_id=?
+       UNION
+       SELECT id, kind, separate, created_at FROM account_notices
+       WHERE email IS NOT NULL AND lower(email)=lower(?)
+     ) notices
      ORDER BY created_at DESC LIMIT 10`,
     [user.id, user.email],
   );

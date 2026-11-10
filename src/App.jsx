@@ -1,5 +1,7 @@
 import React, {
   createContext,
+  lazy,
+  Suspense,
   useContext,
   useEffect,
   useRef,
@@ -18,7 +20,11 @@ import {
 } from "react-router-dom";
 import { Landing, SaleBar } from "./Landing.jsx";
 import { request } from "./request.js";
-import { Checkout } from "./Checkout.jsx";
+const Checkout = lazy(() =>
+  import("./Checkout.jsx").then((mod) => ({ default: mod.Checkout })),
+);
+const Admin = lazy(() => import("./Admin.jsx"));
+const TestPage = lazy(() => import("./TestRunner.jsx"));
 import { formatTugrik, offer, planCode } from "./config/pricing.js";
 import {
   ArrowRight,
@@ -45,10 +51,10 @@ import {
   Headphones,
   PenLine,
 } from "lucide-react";
-import { strings } from "./i18n.js";
+import { loadLanguage, mn } from "./i18n.js";
 import { PracticeAudio, VoiceResponse } from "./PracticeMedia.jsx";
 const STOCK_MN = "Энэ шинэ сорилын асуулт англи хэл дээр.";
-function mnCopy(value) {
+export function mnCopy(value) {
   const text = typeof value === "string" ? value : value?.mn;
   if (!text || text === STOCK_MN) return "";
   if (typeof value === "object" && value.en && text.trim() === value.en.trim())
@@ -60,7 +66,7 @@ function formatBand(value) {
   const number = Number(value);
   return Number.isInteger(number) ? String(number) : number.toFixed(1);
 }
-const sectionText = (section, t) =>
+export const sectionText = (section, t) =>
   ({
     Reading: t.reading,
     "Reading & Writing": t.readingWriting,
@@ -69,7 +75,7 @@ const sectionText = (section, t) =>
     Writing: t.writing,
     Speaking: t.speaking,
   })[section] || section;
-function testLabel(number, t, examId) {
+export function testLabel(number, t, examId) {
   const length = String(number).match(
     /^length-(?:(rw1|rw2|math1|math2|listening|reading|writing|speaking)-)?(\d+)$/,
   );
@@ -99,7 +105,7 @@ function testLabel(number, t, examId) {
 }
 const Context = createContext(null);
 export const useApp = () => useContext(Context);
-function useResource(url) {
+export function useResource(url) {
   const [data, setData] = useState(null),
     [error, setError] = useState(null),
     [version, setVersion] = useState(0);
@@ -128,6 +134,7 @@ function Provider({ children }) {
   const [lang, setLangState] = useState(() =>
       safeRead("studyroom.language", "mn"),
     ),
+    [pack, setPack] = useState(mn),
     [session, setSession] = useState(null),
     [catalog, setCatalog] = useState([]),
     [error, setError] = useState(null);
@@ -145,6 +152,13 @@ function Provider({ children }) {
   useEffect(initialize, [initialize]);
   useEffect(() => {
     document.documentElement.lang = lang;
+    let alive = true;
+    loadLanguage(lang).then((next) => {
+      if (alive) setPack(next);
+    });
+    return () => {
+      alive = false;
+    };
   }, [lang]);
   const setLang = (next) => {
     setLangState(next);
@@ -161,7 +175,7 @@ function Provider({ children }) {
   const value = {
     lang,
     setLang,
-    t: strings[lang] || strings.en,
+    t: pack,
     tr: (value) =>
       typeof value === "string" ? value : value?.[lang] || value?.en || "",
     session,
@@ -185,7 +199,7 @@ function Provider({ children }) {
     </Context.Provider>
   );
 }
-function Loading() {
+export function Loading() {
   const { t } = useApp();
   return (
     <div className="loading" role="status">
@@ -194,7 +208,7 @@ function Loading() {
     </div>
   );
 }
-function ErrorState({ retry, error }) {
+export function ErrorState({ retry, error }) {
   const { t } = useApp();
   const message =
     error?.message === "access_required"
@@ -235,7 +249,10 @@ function AsteriskMark() {
 function Logo() {
   return (
     <Link className="logo" to="/" aria-label="Eight Steppe Academy home">
-      <img className="logo-mark" src="/logo.png" alt="" />
+      <picture>
+        <source srcSet="/logo.webp" type="image/webp" />
+        <img className="logo-mark" src="/logo.png" alt="" />
+      </picture>
     </Link>
   );
 }
@@ -497,9 +514,7 @@ function ExamPage() {
             <h3>{tr(mode.label)}</h3>
             <p>{mode.id === "full" ? t.fullScope : t.sectionDetail}</p>
             {(mode.id === "listening" ||
-              (mode.id === "full" && id !== "sat")) && (
-              <p>{t.deviceListen}</p>
-            )}
+              (mode.id === "full" && id !== "sat")) && <p>{t.deviceListen}</p>}
           </div>
           <div className="library-layout">
             <div className="test-list">
@@ -551,7 +566,9 @@ function ExamPage() {
                   </div>
                   <span className="row-end">
                     {latestMark(test.number) && (
-                      <span className="row-score">{latestMark(test.number)}</span>
+                      <span className="row-score">
+                        {latestMark(test.number)}
+                      </span>
                     )}
                     <span className={`row-lock ${unlocked ? "unlocked" : ""}`}>
                       {unlocked ? (
@@ -609,7 +626,11 @@ function ExamPage() {
                 </p>
               </div>
             </div>
-            <div className="practice-modes" role="group" aria-label={t.fullLength}>
+            <div
+              className="practice-modes"
+              role="group"
+              aria-label={t.fullLength}
+            >
               {exam.books.map((mode) => (
                 <button
                   key={mode.id}
@@ -643,7 +664,9 @@ function ExamPage() {
                   </div>
                   <span className="row-end">
                     {latestMark(test.number) && (
-                      <span className="row-score">{latestMark(test.number)}</span>
+                      <span className="row-score">
+                        {latestMark(test.number)}
+                      </span>
                     )}
                     <span className={`row-lock ${unlocked ? "unlocked" : ""}`}>
                       {unlocked ? (
@@ -664,7 +687,7 @@ function ExamPage() {
     </>
   );
 }
-function Breadcrumb({ exam, current }) {
+export function Breadcrumb({ exam, current }) {
   const { t } = useApp();
   return (
     <nav className="breadcrumb" aria-label="Breadcrumb">
@@ -682,13 +705,12 @@ function Breadcrumb({ exam, current }) {
     </nav>
   );
 }
-function Locked({ exam, number = "reading-1" }) {
+export function Locked({ exam, number = "reading-1" }) {
   const { t, session, api, refresh } = useApp();
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(null);
   const pending = session.requests.some(
-    (r) =>
-      (r.exam === "all" || r.exam === exam.id) && r.status === "pending",
+    (r) => (r.exam === "all" || r.exam === exam.id) && r.status === "pending",
   );
   async function ask() {
     setBusy(true);
@@ -763,14 +785,15 @@ function Locked({ exam, number = "reading-1" }) {
     </section>
   );
 }
-function Login() {
+export function Login() {
   const { t, session } = useApp();
   const [params] = useSearchParams();
   if (session.user) return <Account />;
   const next = params.get("next") || "/account";
-  const plan = params.get("plan") === "week" || params.get("plan") === "month"
-    ? params.get("plan")
-    : "";
+  const plan =
+    params.get("plan") === "week" || params.get("plan") === "month"
+      ? params.get("plan")
+      : "";
   const group = params.get("group") === "3" ? "3" : "";
   const authQuery = new URLSearchParams({ next });
   if (plan) authQuery.set("plan", plan);
@@ -850,145 +873,7 @@ function GoogleIcon() {
     </svg>
   );
 }
-function TestPage() {
-  const { exam: id, number } = useParams();
-  const { catalog, session } = useApp();
-  const exam = catalog.find((e) => e.id === id);
-  const known =
-    exam &&
-    (["sample", "1", "2", "3", "4", "5"].includes(number) ||
-      exam.modes.some(
-        (m) =>
-          m.sample.number === number ||
-          m.tests.some((test) => test.number === number),
-      ) ||
-      exam.books?.some((mode) =>
-        mode.tests.some((test) => test.number === number),
-      ));
-  if (!known) return <NotFound />;
-  if (
-    !String(number).endsWith("sample") &&
-    !session.user?.isAdmin &&
-    !session.grants.includes(id)
-  )
-    return (
-      <main className={id}>
-        <Locked exam={exam} number={number} />
-      </main>
-    );
-  return <TestFlow key={`${id}-${number}`} exam={exam} number={number} />;
-}
-function TestFlow({ exam, number }) {
-  const { t, api, lang } = useApp();
-  const { data, error, reload } = useResource(
-    `/api/tests/${exam.id}/${number}`,
-  );
-  const [run, setRun] = useState(null),
-    [result, setResult] = useState(null),
-    [busy, setBusy] = useState(false),
-    [startError, setStartError] = useState(null);
-  async function start() {
-    setBusy(true);
-    setStartError(null);
-    try {
-      setRun(await api(`/api/tests/${exam.id}/${number}/start`));
-    } catch (e) {
-      setStartError(e);
-    } finally {
-      setBusy(false);
-    }
-  }
-  if (error)
-    return (
-      <main className="state-page">
-        <ErrorState error={error} retry={reload} />
-      </main>
-    );
-  if (!data)
-    return (
-      <main className="state-page">
-        <Loading />
-      </main>
-    );
-  if (result)
-    return (
-      <Results
-        result={result}
-        exam={exam}
-        onRetake={() => {
-          setRun(null);
-          setResult(null);
-        }}
-      />
-    );
-  if (run) return <Player initial={run} exam={exam} onFinish={setResult} />;
-  return (
-    <main className={`test-intro container ${exam.id}`}>
-      <Breadcrumb exam={exam} current={testLabel(number, t, exam.id)} />
-      <div className="intro-panel">
-        <div className="intro-heading">
-          <span className="tag">
-            {exam.name} · {testLabel(number, t, exam.id)}
-          </span>
-          <p className="eyebrow">{t.before}</p>
-          <h1>{t.ready}</h1>
-          <p>{t.readyText}</p>
-        </div>
-        <div className="intro-stats">
-          <div>
-            <Clock3 />
-            <strong>{data.minutes}</strong>
-            <span>{t.minutes}</span>
-          </div>
-          <div>
-            <PenLine />
-            <strong>{data.count}</strong>
-            <span>{t.tasks}</span>
-          </div>
-          <div>
-            <Languages />
-            <strong>EN / MN</strong>
-            <span>{t.showHelp}</span>
-          </div>
-        </div>
-        {data.outline && (
-          <div className="test-outline">
-            {data.outline.map((part) => (
-              <div key={part.id}>
-                <strong>{part.label[lang]}</strong>
-                <span>
-                  {part.count} {t.tasks} · {part.minutes} {t.minutes}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-        {data.mode === "full" && <p className="fine">{t.fullTimer}</p>}
-        {data.transcriptPractice && (
-          <p className="notice">{t.transcriptNotice}</p>
-        )}
-        {data.selfReview && <p className="notice">{t.selfReviewNotice}</p>}
-        <ul className="intro-rules">
-          {[t.timerRule, t.helpRule, t.scoreRule].map((s) => (
-            <li key={s}>
-              <Check size={16} />
-              {s}
-            </li>
-          ))}
-        </ul>
-        <button className="button" onClick={start} disabled={busy}>
-          {busy ? t.loading : t.begin}
-          <ArrowRight size={18} />
-        </button>
-        {startError && <ErrorState error={startError} retry={start} />}
-        <p className="fine">
-          {data.sections.map((x) => sectionText(x, t)).join(" · ")}
-        </p>
-      </div>
-    </main>
-  );
-}
-function Modal({ open, onClose, title, children }) {
+export function Modal({ open, onClose, title, children }) {
   const ref = useRef(null);
   useEffect(() => {
     if (open && !ref.current.open) ref.current.showModal();
@@ -1022,579 +907,6 @@ function Modal({ open, onClose, title, children }) {
     </dialog>
   );
 }
-function HelpSheet({ question, table, t }) {
-  const prompt = mnCopy(question.prompt);
-  const options = (question.options || [])
-    .map((option) => mnCopy(option))
-    .filter(Boolean);
-  const hint = mnCopy(question.hint);
-  if (!prompt && !options.length && !hint && !table) {
-    return <p className="help-empty">{t.helpMissing}</p>;
-  }
-  return (
-    <aside className="help-sheet" lang="mn">
-      <p className="help-kicker">{t.helpBelow}</p>
-      {prompt && <p className="help-prompt">{prompt}</p>}
-      {table && (
-        <div className="task-table">
-          <table>
-            <tbody>
-              {table.map((row, i) => (
-                <tr key={i}>
-                  {row.map((cell, j) => (
-                    <td key={j}>{cell}</td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      {options.length > 0 && (
-        <ol className="help-options">
-          {options.map((option, i) => (
-            <li key={i}>
-              <span>{"ABCDEFGHIJKLMNOPQRSTUVWXYZ"[i]}</span>
-              {option}
-            </li>
-          ))}
-        </ol>
-      )}
-      {hint && <p className="help-hint">{hint}</p>}
-      <small>{t.helpNote}</small>
-    </aside>
-  );
-}
-function Player({ initial, exam, onFinish }) {
-  const { t, api, tr } = useApp();
-  const navigate = useNavigate();
-  const { test, runId, deadline, serverNow } = initial;
-  const [answers, setAnswers] = useState(initial.answers),
-    [index, setIndex] = useState(0),
-    [help, setHelp] = useState(false),
-    [flags, setFlags] = useState(new Set()),
-    [saveStatus, setSaveStatus] = useState("saved"),
-    [seconds, setSeconds] = useState(
-      Math.max(0, Math.ceil((deadline - serverNow) / 1000)),
-    ),
-    [modal, setModal] = useState(null),
-    [busy, setBusy] = useState(false),
-    [error, setError] = useState(null);
-  const answersRef = useRef(answers),
-    saveTimer = useRef(null),
-    queue = useRef(Promise.resolve()),
-    done = useRef(false),
-    offset = useRef(serverNow - Date.now()),
-    submitRef = useRef(null);
-  const question = test.questions[index];
-  const questionTable = question.table;
-  const count = test.questions.length;
-  const answered = Object.values(answers).filter(
-    (v) => v !== "" && v !== null,
-  ).length;
-  const save = useCallback(
-    (value) => {
-      setSaveStatus("saving");
-      const task = queue.current
-        .catch(() => {})
-        .then(() =>
-          api(`/api/runs/${runId}/answers`, { answers: value }, "PUT"),
-        );
-      queue.current = task;
-      task
-        .then(() => {
-          if (answersRef.current === value) setSaveStatus("saved");
-        })
-        .catch((e) => {
-          if (e.message !== "time_up") setSaveStatus("saveFailed");
-        });
-      return task;
-    },
-    [runId, api],
-  );
-  useEffect(() => {
-    const ticker = setInterval(() => {
-      const s = Math.max(
-        0,
-        Math.ceil((deadline - Date.now() - offset.current) / 1000),
-      );
-      setSeconds(s);
-      if (s === 0 && !done.current) submitRef.current?.();
-    }, 500);
-    return () => clearInterval(ticker);
-  }, [deadline]);
-  useEffect(() => {
-    const warn = (e) => {
-      if (!done.current) {
-        e.preventDefault();
-        e.returnValue = "";
-      }
-    };
-    window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
-  }, []);
-  useEffect(() => () => clearTimeout(saveTimer.current), []);
-  useEffect(() => {
-    if (saveStatus !== "saveFailed") return;
-    const retry = setTimeout(() => save(answersRef.current), 3000);
-    return () => clearTimeout(retry);
-  }, [saveStatus, save]);
-  function answer(value) {
-    const next = { ...answersRef.current, [question.id]: value };
-    answersRef.current = next;
-    setAnswers(next);
-    if (question.kind === "essay" || question.kind === "speaking") {
-      clearTimeout(saveTimer.current);
-      setSaveStatus("saving");
-      saveTimer.current = setTimeout(() => {
-        saveTimer.current = null;
-        save(answersRef.current);
-      }, 300);
-    } else save(next);
-  }
-  async function submit() {
-    if (done.current) return;
-    done.current = true;
-    setBusy(true);
-    setError(null);
-    clearTimeout(saveTimer.current);
-    saveTimer.current = null;
-    try {
-      await queue.current.catch(() => {});
-      const result = await api(`/api/runs/${runId}/submit`, {
-        answers: answersRef.current,
-      });
-      onFinish(result);
-    } catch (e) {
-      done.current = false;
-      setError(e);
-      setBusy(false);
-    }
-  }
-  submitRef.current = submit;
-  function go(i) {
-    setIndex(i);
-    setHelp(false);
-    document.getElementById("question-title")?.focus();
-  }
-  async function leave() {
-    setBusy(true);
-    try {
-      if (saveTimer.current) {
-        clearTimeout(saveTimer.current);
-        saveTimer.current = null;
-        await save(answersRef.current);
-      }
-      await queue.current;
-      done.current = true;
-      navigate(`/${exam.id}`);
-    } catch (e) {
-      setError(e);
-      setBusy(false);
-    }
-  }
-  const timer = `${Math.floor(seconds / 60)
-    .toString()
-    .padStart(2, "0")}:${(seconds % 60).toString().padStart(2, "0")}`;
-  return (
-    <main className={`player ${exam.id}`}>
-      <div className="player-toolbar">
-        <div>
-          <Link
-            to={`/${exam.id}`}
-            onClick={(e) => {
-              e.preventDefault();
-              setModal("exit");
-            }}
-            className="icon-button"
-            aria-label={t.exit}
-          >
-            <ArrowLeft size={19} />
-          </Link>
-          <div>
-            <strong>
-              {exam.name} <span> / </span> {testLabel(test.number, t, exam.id)}
-            </strong>
-            <p>{sectionText(question.section, t)}</p>
-          </div>
-        </div>
-        <button
-          className={`help-button toolbar-help ${help ? "on" : ""}`}
-          aria-expanded={help}
-          onClick={() => setHelp((open) => !open)}
-        >
-          <Languages size={16} />
-          {help ? t.hideHelp : t.showHelp}
-        </button>
-        <div
-          className={`timer ${seconds < 60 ? "urgent" : ""}`}
-          role="timer"
-          aria-label={t.timeLeft}
-        >
-          <Clock3 size={18} />
-          <span>{timer}</span>
-        </div>
-        <button
-          className="button small"
-          disabled={busy}
-          onClick={() => setModal("submit")}
-        >
-          {t.submit}
-          <Check size={15} />
-        </button>
-      </div>
-      {test.outline?.length > 1 && (
-        <nav className="player-sections" aria-label={t.chooseSection}>
-          {test.outline.map((part) => (
-            <button
-              key={part.id}
-              aria-current={
-                part.questionIds.includes(question.id) ? "step" : undefined
-              }
-              onClick={() =>
-                go(
-                  test.questions.findIndex((q) => q.id === part.questionIds[0]),
-                )
-              }
-              disabled={busy}
-            >
-              {tr(part.label)}
-              <span>
-                {part.minutes} {t.minutes}
-              </span>
-            </button>
-          ))}
-        </nav>
-      )}
-      <div className="player-progress">
-        <span style={{ width: `${(answered / count) * 100}%` }} />
-      </div>
-      <div
-        className={`player-workspace ${question.passage ? "has-passage" : ""}`}
-      >
-        {question.passage && question.section !== "Listening" && (
-          <section className="passage-panel">
-            <div className="eyebrow">
-              <BookOpen size={15} />
-              {t.passage}
-            </div>
-            <Passage text={question.passage} />
-            {help && mnCopy(question.passageMn) && (
-              <div className="help-sheet" lang="mn">
-                <p className="help-kicker">{t.helpBelow}</p>
-                <p className="help-passage">{mnCopy(question.passageMn)}</p>
-              </div>
-            )}
-          </section>
-        )}
-        {question.section === "Listening" && (question.passage || question.audio) && (
-          <section className="passage-panel listening-player">
-            <PracticeAudio
-              src={question.audio}
-              text={question.passage || question.speechText}
-              t={t}
-              disabled={busy || seconds === 0}
-            />
-            <p className="notice">{t.transcriptLater}</p>
-          </section>
-        )}
-        <section className="question-panel">
-          <div className="question-top">
-            <span className="eyebrow">
-              {t.question} {index + 1} {t.of} {count}
-            </span>
-            <button
-              className={`icon-button flag-button ${flags.has(index) ? "flagged" : ""}`}
-              aria-label={flags.has(index) ? t.unflag : t.flag}
-              aria-pressed={flags.has(index)}
-              onClick={() =>
-                setFlags((old) => {
-                  const next = new Set(old);
-                  next.has(index) ? next.delete(index) : next.add(index);
-                  return next;
-                })
-              }
-            >
-              <Flag
-                size={18}
-                fill={flags.has(index) ? "currentColor" : "none"}
-              />
-            </button>
-          </div>
-          {question.instruction && (
-            <p className="question-direction">{question.instruction}</p>
-          )}
-          <h1
-            className="question-title"
-            id="question-title"
-            tabIndex={-1}
-            lang="en"
-          >
-            {question.prompt.en}
-          </h1>
-          {question.hint && <p className="fine">{question.hint.en}</p>}
-          {questionTable && (
-            <div className="task-table">
-              <table>
-                <thead>
-                  <tr>
-                    {questionTable[0].map((cell, i) => (
-                      <th key={i}>{cell}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {questionTable.slice(1).map((row, i) => (
-                    <tr key={i}>
-                      {row.map((cell, j) => (
-                        <td key={j}>{cell}</td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-          {!question.passage &&
-            (question.audio || question.section === "Listening") && (
-              <PracticeAudio
-                src={question.audio}
-                text={question.prompt.en.replace(
-                  "Choose the best response: ",
-                  "",
-                )}
-                t={t}
-                disabled={busy || seconds === 0}
-              />
-            )}
-          {question.speechText && (
-            <PracticeAudio
-              text={question.speechText}
-              t={t}
-              disabled={busy || seconds === 0}
-            />
-          )}
-          {question.kind === "speaking" && (
-            <VoiceResponse
-              key={`${runId}-${question.id}`}
-              storageKey={`${runId}:${question.id}`}
-              t={t}
-              disabled={busy || seconds === 0}
-            />
-          )}
-
-          {question.options ? (
-            <fieldset className="answer-options">
-              <legend className="sr-only">{t.yourAnswer}</legend>
-              {question.options.map((option, i) => (
-                <label
-                  key={i}
-                  className={`answer-option ${String(answers[question.id]) === String(i) ? "selected" : ""}`}
-                >
-                  <input
-                    type="radio"
-                    name={`q-${question.id}`}
-                    value={i}
-                    checked={String(answers[question.id]) === String(i)}
-                    onChange={() => answer(i)}
-                    disabled={busy || seconds === 0}
-                  />
-                  <span className="option-letter">
-                    {"ABCDEFGHIJKLMNOPQRSTUVWXYZ"[i]}
-                  </span>
-                  <span className="option-copy">
-                    <span lang="en">{option.en}</span>
-                  </span>
-                  <span className="option-check">
-                    {String(answers[question.id]) === String(i) && (
-                      <Check size={15} />
-                    )}
-                  </span>
-                </label>
-              ))}
-            </fieldset>
-          ) : question.kind === "essay" || question.kind === "speaking" ? (
-            <label className="written-answer long-response">
-              <span>
-                {question.kind === "speaking" ? t.speakingNotes : t.yourAnswer}
-              </span>
-              <textarea
-                rows={10}
-                maxLength={20000}
-                value={answers[question.id] ?? ""}
-                onChange={(e) => answer(e.target.value)}
-                disabled={busy || seconds === 0}
-                placeholder={
-                  question.kind === "speaking"
-                    ? t.notesPlaceholder
-                    : t.essayPlaceholder
-                }
-              />
-              <small>
-                {
-                  String(answers[question.id] ?? "")
-                    .trim()
-                    .split(/\s+/)
-                    .filter(Boolean).length
-                }{" "}
-                {t.words}
-                {question.minWords
-                  ? ` · ${question.minWords}+ ${t.recommended}`
-                  : ""}
-              </small>
-              <small>{t.selfReviewNotice}</small>
-            </label>
-          ) : (
-            <label className="written-answer">
-              <span>{t.yourAnswer}</span>
-              <input
-                autoComplete="off"
-                spellCheck="false"
-                maxLength={500}
-                value={answers[question.id] ?? ""}
-                onChange={(e) => answer(e.target.value)}
-                placeholder={
-                  question.answerForm === "number"
-                    ? t.numberPlaceholder
-                    : question.answerForm === "time"
-                      ? t.timePlaceholder
-                      : t.answerPlaceholder
-                }
-                disabled={busy || seconds === 0}
-              />
-              {question.answerForm === "number" && (
-                <small className="number-note">{t.numberAnswer}</small>
-              )}
-              {question.answerForm === "time" && (
-                <small className="number-note">{t.timeAnswer}</small>
-              )}
-            </label>
-          )}
-          {help && (
-            <HelpSheet question={question} table={question.tableMn} t={t} />
-          )}
-          <div className="question-controls">
-            <button
-              className="button secondary"
-              disabled={index === 0 || busy}
-              onClick={() => go(index - 1)}
-            >
-              <ArrowLeft size={15} />
-              {t.previous}
-            </button>
-            <button
-              className="button"
-              disabled={busy}
-              onClick={() =>
-                index === count - 1 ? setModal("submit") : go(index + 1)
-              }
-            >
-              {index === count - 1 ? t.submit : t.next}
-              <ArrowRight size={15} />
-            </button>
-          </div>
-          {error && <ErrorState error={error} retry={submit} />}
-        </section>
-      </div>
-      <div className="question-dock">
-        <div className="dock-summary">
-          <strong>
-            {answered}/{count} {t.answered}
-          </strong>
-          <span
-            className={saveStatus === "saveFailed" ? "save-error" : ""}
-            role="status"
-          >
-            {saveStatus === "saved" ? (
-              <CheckCircle2 size={13} />
-            ) : (
-              <Clock3 size={13} />
-            )}{" "}
-            {t[saveStatus]}
-          </span>
-        </div>
-        <nav className="question-grid" aria-label={t.jump}>
-          {test.questions.map((q, i) => (
-            <button
-              key={q.id}
-              aria-label={`${t.question} ${i + 1}${flags.has(i) ? `, ${t.flagged}` : ""}`}
-              aria-current={i === index ? "step" : undefined}
-              className={`${answers[q.id] !== undefined && answers[q.id] !== "" ? "answered" : ""} ${i === index ? "current" : ""} ${flags.has(i) ? "marked" : ""}`}
-              onClick={() => go(i)}
-            >
-              {i + 1}
-              {flags.has(i) && <span />}
-            </button>
-          ))}
-        </nav>
-      </div>
-      <Modal
-        open={modal === "submit"}
-        onClose={() => !busy && setModal(null)}
-        title={t.confirmFinish}
-      >
-        <p>
-          {answered < count
-            ? `${count - answered} ${t.unanswered}`
-            : t.allAnswered}
-        </p>
-        <div className="modal-actions">
-          <button
-            className="button secondary"
-            disabled={busy}
-            onClick={() => setModal(null)}
-          >
-            {t.keepGoing}
-          </button>
-          <button className="button" disabled={busy} onClick={submit}>
-            {busy ? t.loading : t.reviewSubmit}
-            <Check size={15} />
-          </button>
-        </div>
-        {error && <ErrorState error={error} />}
-      </Modal>
-      <Modal
-        open={modal === "exit"}
-        onClose={() => !busy && setModal(null)}
-        title={t.exitTitle}
-      >
-        <p>{t.exitText}</p>
-        <div className="modal-actions">
-          <button
-            className="button secondary"
-            disabled={busy}
-            onClick={() => setModal(null)}
-          >
-            {t.stay}
-          </button>
-          <button className="button" disabled={busy} onClick={leave}>
-            {t.leave}
-            <ArrowRight size={15} />
-          </button>
-        </div>
-        {error && <ErrorState error={error} />}
-      </Modal>
-    </main>
-  );
-}
-function Passage({ text }) {
-  const lines = text.split("\n").filter((x) => x.trim());
-  return (
-    <div className="passage-text" lang="en">
-      {lines.map((line, i) => (
-        <React.Fragment key={i}>
-          {i === 0 ? <h2>{line}</h2> : <span>{line} </span>}
-          {i > 0 && /[.!?]$/.test(line.trim()) && (
-            <>
-              <br />
-              <br />
-            </>
-          )}
-        </React.Fragment>
-      ))}
-    </div>
-  );
-}
 function suggestedNext(catalog, examId, number) {
   const entry = catalog?.find((item) => item.id === examId);
   if (!entry) return null;
@@ -1609,7 +921,9 @@ function suggestedNext(catalog, examId, number) {
 }
 function cleanGuideText(text) {
   const out = [];
-  for (const raw of String(text || "").replace(/\r/g, "").split("\n")) {
+  for (const raw of String(text || "")
+    .replace(/\r/g, "")
+    .split("\n")) {
     const line = raw.trim();
     if (!line) {
       if (out.at(-1) !== "") out.push("");
@@ -1629,12 +943,11 @@ function cleanGuideText(text) {
   }
   return out.join("\n");
 }
-function Results({ result, exam, onRetake }) {
+export function Results({ result, exam, onRetake }) {
   const { t, tr, lang, session, catalog } = useApp();
   const [showMn, setShowMn] = useState(false);
   const next = suggestedNext(catalog, exam.id, result.number);
-  const unlocked =
-    session.user?.isAdmin || session.grants?.includes(exam.id);
+  const unlocked = session.user?.isAdmin || session.grants?.includes(exam.id);
   const prices = offer();
   function display(q, value) {
     if (value === "" || value === undefined) return t.notAnswered;
@@ -2008,7 +1321,7 @@ function Guide() {
     </main>
   );
 }
-function planKey(code) {
+export function planKey(code) {
   return (
     {
       week: "planWeek",
@@ -2240,335 +1553,7 @@ function SavedResult() {
     <Results result={data} exam={catalog.find((e) => e.id === data.exam)} />
   );
 }
-function Admin() {
-  const { t, session } = useApp();
-  if (!session.user) return <Login />;
-  if (!session.user.isAdmin) return <NotFound />;
-  return <AdminPanel />;
-}
-function AdminPanel() {
-  const { t, api, refresh } = useApp();
-  const { data, error, reload } = useResource("/api/admin");
-  const [busy, setBusy] = useState(false),
-    [actionError, setActionError] = useState(null),
-    [revoke, setRevoke] = useState(null);
-  async function act(userId, exam, action, days) {
-    setBusy(true);
-    setActionError(null);
-    try {
-      const note =
-        action === "approve" ? window.prompt(t.approveNote) : "Revoked from the admin page";
-      if (!note || note.trim().length < 3) return;
-      await api("/api/admin/access", {
-        userId,
-        exam,
-        action,
-        days,
-        note: note.trim(),
-      });
-      setRevoke(null);
-      await refresh();
-      reload();
-    } catch (e) {
-      setActionError(e);
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <main className="admin-page container">
-      <p className="eyebrow">STUDYROOM / ADMIN</p>
-      <h1>{t.manageTitle}</h1>
-      <p className="page-description">{t.manageText}</p>
-      {data?.orders?.some((order) => order.status === "awaiting_payment") && (
-        <section>
-          <h2>{t.waitingPayment}</h2>
-          {data.orders
-            .filter((order) => order.status === "awaiting_payment")
-            .map((order) => (
-              <div className="admin-row" key={order.code}>
-                <div>
-                  <strong>{order.code}</strong>
-                  <small>
-                    {order.email} · {order.plan} · {order.group_size} ·{" "}
-                    {order.amount_mnt}
-                  </small>
-                </div>
-                <button
-                  className="button small"
-                  disabled={busy}
-                  onClick={async () => {
-                    const note = window.prompt(t.approveNote);
-                    if (!note || note.trim().length < 3) return;
-                    setBusy(true);
-                    try {
-                      await api("/api/admin/orders/approve", {
-                        code: order.code,
-                        note: note.trim(),
-                      });
-                      await refresh();
-                      reload();
-                    } catch (e) {
-                      setActionError(e);
-                    } finally {
-                      setBusy(false);
-                    }
-                  }}
-                >
-                  {t.confirmPayment}
-                </button>
-                {order.status === "paid" && (
-                  <button
-                    className="button small secondary"
-                    onClick={() =>
-                      setRevoke({ user_id: order.user_id, exam: "all" })
-                    }
-                  >
-                    {t.revoke}
-                  </button>
-                )}
-              </div>
-            ))}
-        </section>
-      )}
-      {data?.orders?.some((order) => order.status === "paid") && (
-        <section>
-          <h2>{t.paidUntil}</h2>
-          {data.orders
-            .filter((order) => order.status === "paid")
-            .map((order) => (
-              <div className="admin-row" key={order.code}>
-                <div>
-                  <strong>{order.code}</strong>
-                  <small>
-                    {order.email} · {order.amount_mnt}
-                    {order.ends_at
-                      ? ` · ${new Date(Number(order.ends_at)).toLocaleString()}`
-                      : ""}
-                  </small>
-                </div>
-                <button
-                  className="button small secondary"
-                  disabled={busy}
-                  onClick={() =>
-                    setRevoke({
-                      code: order.code,
-                      email: order.email,
-                      exam: "all",
-                    })
-                  }
-                >
-                  {t.revoke}
-                </button>
-              </div>
-            ))}
-        </section>
-      )}
-      {data?.sms?.length > 0 && (
-        <section>
-          <h2>{t.unmatchedSms}</h2>
-          {data.sms.map((event) => (
-            <div className="admin-row" key={event.id}>
-              <div>
-                <strong>{event.order_code || event.unmatched_reason}</strong>
-                <small>
-                  {event.account_masked || "—"} · {event.amount_mnt ?? "—"} ·{" "}
-                  {event.utga || "—"} ·{" "}
-                  {new Date(event.server_received_at).toLocaleString()}
-                </small>
-              </div>
-              <button
-                className="button small secondary"
-                disabled={busy}
-                onClick={async () => {
-                  const note = window.prompt(t.approveNote);
-                  if (!note || note.trim().length < 3) return;
-                  setBusy(true);
-                  try {
-                    await api("/api/admin/sms/dismiss", {
-                      id: event.id,
-                      note: note.trim(),
-                    });
-                    reload();
-                  } catch (e) {
-                    setActionError(e);
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
-              >
-                {t.smsDismiss}
-              </button>
-              <button
-                className="button small"
-                disabled={busy}
-                onClick={async () => {
-                  const code = window.prompt(t.smsLinkCode);
-                  if (!code) return;
-                  const note = window.prompt(t.approveNote);
-                  if (!note || note.trim().length < 3) return;
-                  setBusy(true);
-                  try {
-                    await api("/api/admin/sms/link", {
-                      id: event.id,
-                      code: code.trim(),
-                      note: note.trim(),
-                    });
-                    await refresh();
-                    reload();
-                  } catch (e) {
-                    setActionError(e);
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
-              >
-                {t.smsLink}
-              </button>
-            </div>
-          ))}
-        </section>
-      )}
-      {actionError && <ErrorState error={actionError} />}
-      <h2>{t.requests}</h2>
-      {error ? (
-        <ErrorState retry={reload} />
-      ) : !data ? (
-        <Loading />
-      ) : (
-        <>
-          {data.requests.length ? (
-            <div className="admin-table">
-              {data.requests.map((row) => (
-                <div className="admin-row" key={row.id}>
-                  <div>
-                    <strong>{row.name}</strong>
-                    <small>{row.email}</small>
-                  </div>
-                  <span className={`tag ${row.exam === "all" ? "sat" : row.exam}`}>
-                    {row.exam === "all" ? t.allExams : row.exam.toUpperCase()}
-                    {row.plan ? ` · ${t[planKey(row.plan)]}` : ""}
-                  </span>
-                  <span className="status">
-                    {row.status === "pending" ? t.pending : t[row.status]}
-                  </span>
-                  <div className="admin-actions">
-                    {row.status === "pending" && (
-                      <>
-                        <button
-                          disabled={busy}
-                          className="button small secondary"
-                          onClick={() => act(row.user_id, row.exam, "reject")}
-                        >
-                          {t.reject}
-                        </button>
-                        <button
-                          disabled={busy}
-                          className="button small secondary"
-                          onClick={() => act(row.user_id, row.exam, "approve", 7)}
-                        >
-                          {t.approveWeek}
-                        </button>
-                        <button
-                          disabled={busy}
-                          className="button small"
-                          onClick={() => act(row.user_id, row.exam, "approve", 30)}
-                        >
-                          {t.approveMonth}
-                          <Check size={14} />
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="empty-state">{t.noRequests}</p>
-          )}
-          <h2>{t.activeAccess}</h2>
-          {data.access?.length ? (
-            <div className="admin-table">
-              {data.access.map((row) => (
-                <div className="admin-row" key={row.id}>
-                  <div>
-                    <strong>{row.name || row.email}</strong>
-                    <small>
-                      {row.email}
-                      {row.code ? ` · ${row.code}` : ""} ·{" "}
-                      {new Date(Number(row.ends_at)).toLocaleString()}
-                    </small>
-                  </div>
-                  {!row.order_id && row.user_id && (
-                    <button
-                      className="button small secondary"
-                      disabled={busy}
-                      onClick={() =>
-                        setRevoke({
-                          user_id: row.user_id,
-                          email: row.email,
-                          exam: "all",
-                        })
-                      }
-                    >
-                      {t.revoke}
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="empty-state">{t.noGrants}</p>
-          )}
-        </>
-      )}
-      <Modal
-        open={!!revoke}
-        onClose={() => !busy && setRevoke(null)}
-        title={t.confirmRevoke}
-      >
-        <p>
-          {revoke?.email} · {revoke?.exam.toUpperCase()}
-        </p>
-        <div className="modal-actions">
-          <button
-            className="button secondary"
-            disabled={busy}
-            onClick={() => setRevoke(null)}
-          >
-            {t.cancel}
-          </button>
-          <button
-            className="button"
-            disabled={busy}
-            onClick={() =>
-              revoke.code
-                ? (async () => {
-                    setBusy(true);
-                    try {
-                      await api("/api/admin/orders/revoke", {
-                        code: revoke.code,
-                        note: "Revoked from the admin page",
-                      });
-                      setRevoke(null);
-                      reload();
-                    } catch (e) {
-                      setActionError(e);
-                    } finally {
-                      setBusy(false);
-                    }
-                  })()
-                : act(revoke.user_id, revoke.exam, "revoke")
-            }
-          >
-            {t.revoke}
-          </button>
-        </div>
-      </Modal>
-    </main>
-  );
-}
-function NotFound() {
+export function NotFound() {
   const { t } = useApp();
   return (
     <main className="state-page not-found">
@@ -2592,19 +1577,29 @@ export default function App() {
       <SaleBar />
       <Header />
       <div id="main-content">
-        <Routes>
-          <Route path="/" element={<Home />} />
-          <Route path="/login" element={<Login />} />
-          <Route path="/checkout" element={<Checkout />} />
-          <Route path="/checkout/:code" element={<Checkout />} />
-          <Route path="/account" element={<Account />} />
-          <Route path="/admin" element={<Admin />} />
-          <Route path="/results/:id" element={<SavedResult />} />
-          <Route path="/:exam" element={<ExamPage />} />
-          <Route path="/:exam/guide" element={<Guide />} />
-          <Route path="/:exam/tests/:number" element={<TestPage />} />
-          <Route path="*" element={<NotFound />} />
-        </Routes>
+        <Suspense
+          fallback={
+            <main className="state-page">
+              <div className="loading" role="status">
+                <span className="spinner" />
+              </div>
+            </main>
+          }
+        >
+          <Routes>
+            <Route path="/" element={<Home />} />
+            <Route path="/login" element={<Login />} />
+            <Route path="/checkout" element={<Checkout />} />
+            <Route path="/checkout/:code" element={<Checkout />} />
+            <Route path="/account" element={<Account />} />
+            <Route path="/admin" element={<Admin />} />
+            <Route path="/results/:id" element={<SavedResult />} />
+            <Route path="/:exam" element={<ExamPage />} />
+            <Route path="/:exam/guide" element={<Guide />} />
+            <Route path="/:exam/tests/:number" element={<TestPage />} />
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </Suspense>
       </div>
     </Provider>
   );

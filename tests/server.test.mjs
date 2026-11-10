@@ -82,12 +82,15 @@ test("hosted postgres uses portable timestamps, placeholders, and locked-down ta
   );
   assert.equal(schema.includes("INSERT OR REPLACE"), false);
   assert.equal(schema.includes("PRAGMA"), false);
-  const boot = fs.readFileSync(new URL("../server/db.mjs", import.meta.url), "utf8");
+  const boot = fs.readFileSync(
+    new URL("../migrations/2026-11-10-baseline.sql", import.meta.url),
+    "utf8",
+  );
   for (const table of ["orders", "entitlements", "sms_payment_events", "user_sessions"])
     assert.equal(boot.includes(table), true);
-  assert.equal(boot.includes("ENABLE ROW LEVEL SECURITY"), true);
-  assert.equal(boot.includes("REVOKE ALL ON TABLE"), true);
-  assert.equal(boot.includes("REVOKE ALL ON SEQUENCE orders_id_seq, entitlements_id_seq"), true);
+  assert.equal(boot.includes("enable row level security"), true);
+  assert.equal(boot.includes("revoke all on table"), true);
+  assert.equal(boot.includes("revoke all on sequence orders_id_seq, entitlements_id_seq"), true);
   assert.equal(fs.existsSync("public/media/ielts/01/listening-part1.mp3"), true);
 });
 test("health reports the open database", async () => {

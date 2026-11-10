@@ -1,10 +1,11 @@
-import fs from "node:fs";
+import { EventEmitter } from "node:events";
 import { DatabaseSync } from "node:sqlite";
 import session from "express-session";
 import postgres from "postgres";
-import { paymentTables, migrateLegacyGrants, expireInvitations } from "./orders.mjs";
+import { paymentTables } from "./orders.mjs";
 import { smsTables } from "./sms-ingest.mjs";
 import { sessionTables } from "./sessions.mjs";
+import { assertMigrated, runMigrations } from "./migrate.mjs";
 
 const sqliteSchema = `PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
  CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, google_sub TEXT UNIQUE NOT NULL, email TEXT NOT NULL, name TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
@@ -45,7 +46,9 @@ export function openDatabase(path) {
   if (!audit.some((column) => column.name === "detail"))
     raw.exec("ALTER TABLE audit ADD COLUMN detail TEXT");
   raw
-    .prepare("DELETE FROM entitlements WHERE user_id IS NULL AND CAST(created_at AS bigint)<?")
+    .prepare(
+      "DELETE FROM entitlements WHERE user_id IS NULL AND CAST(created_at AS bigint)<?",
+    )
     .run(Date.now() - 30 * 86400000);
   return wrapSqlite(raw);
 }
@@ -153,16 +156,21 @@ async function applyMillis(tx) {
        applied_at timestamptz not null default now()
      )`,
   );
-  await tx.unsafe("alter table public.schema_migrations enable row level security");
+  await tx.unsafe(
+    "alter table public.schema_migrations enable row level security",
+  );
   for (const [table, column] of millisColumns) {
     const kind = await columnType(tx, table, column);
     if (kind === "integer")
-      await tx.unsafe(`alter table public.${table} alter column ${column} type bigint`);
+      await tx.unsafe(
+        `alter table public.${table} alter column ${column} type bigint`,
+      );
     else if (kind !== "bigint")
       throw new Error(`millis migration incomplete: public.${table}.${column}`);
   }
   const left = await integerMillis(tx);
-  if (left.length) throw new Error(`millis migration incomplete: ${left.join(", ")}`);
+  if (left.length)
+    throw new Error(`millis migration incomplete: ${left.join(", ")}`);
   await tx.unsafe(
     `insert into public.schema_migrations (id) values ('${MILLIS_MIGRATION_ID}') on conflict (id) do nothing`,
   );
@@ -171,7 +179,11 @@ async function applyMillis(tx) {
 
 export async function widenMillis(sql, options = {}) {
   const lock = timeoutMs("lock_timeout", options.lockTimeoutMs, 2000);
-  const statement = timeoutMs("statement_timeout", options.statementTimeoutMs, 8000);
+  const statement = timeoutMs(
+    "statement_timeout",
+    options.statementTimeoutMs,
+    8000,
+  );
   const retries = Number(options.retries ?? 2);
   let last;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
@@ -180,12 +192,17 @@ export async function widenMillis(sql, options = {}) {
         await tx.unsafe(
           `select set_config('lock_timeout', '${lock}', true), set_config('statement_timeout', '${statement}', true)`,
         );
-        await tx.unsafe(`select pg_advisory_xact_lock(${MILLIS_ADVISORY_LOCK})`);
+        await tx.unsafe(
+          `select pg_advisory_xact_lock(${MILLIS_ADVISORY_LOCK})`,
+        );
         return applyMillis(tx);
       });
     } catch (error) {
       last = error;
-      if (attempt === retries || (error.code !== "55P03" && error.code !== "57014"))
+      if (
+        attempt === retries ||
+        (error.code !== "55P03" && error.code !== "57014")
+      )
         throw error;
       await new Promise((resolve) => setTimeout(resolve, 40 * (attempt + 1)));
     }
@@ -215,103 +232,75 @@ export function postgresSsl(connectionString) {
   return "require";
 }
 
-export async function openPostgres(connectionString) {
-  const sql = postgres(connectionString, {
-    max: 1,
-    prepare: false,
-    ssl: postgresSsl(connectionString),
-    idle_timeout: 20,
-    connect_timeout: 30,
-    types: {
-      bigint: {
-        to: 20,
-        from: [20],
-        serialize: (value) => String(value),
-        parse: (value) => Number(value),
-      },
-    },
-  });
-  try {
-    let last;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      try {
-        return await initializePostgres(sql);
-      } catch (error) {
-        last = error;
-        // Concurrent CREATE TABLE IF NOT EXISTS can collide in pg_type.
-        if (attempt === 2 || (error.code !== "23505" && error.code !== "40P01")) throw error;
-      }
-    }
-    throw last;
-  } catch (error) {
-    await sql.end({ timeout: 5 }).catch(() => {});
-    throw error;
-  }
+const POOL_IDLE_SECONDS = 20;
+
+export function poolMax(env = process.env) {
+  const raw = env.PG_POOL_MAX;
+  if (raw == null || raw === "") return 5;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 20)
+    throw new Error("invalid PG_POOL_MAX");
+  return parsed;
 }
 
-async function initializePostgres(sql) {
-  const schema = fs.readFileSync(
-    new URL("./schema.postgres.sql", import.meta.url),
-    "utf8",
+function onnotice(notice) {
+  const severity = String(notice?.severity || "NOTICE").toUpperCase();
+  if (
+    severity === "NOTICE" ||
+    severity === "INFO" ||
+    severity === "LOG" ||
+    severity === "DEBUG"
+  )
+    return;
+  console.error(
+    "postgres:",
+    severity,
+    notice?.code || "",
+    notice?.message || "",
   );
-  const locked = [
-    "sms_payment_events",
-    "sms_rate_hits",
-    "orders",
-    "entitlements",
-    "user_sessions",
-    "account_notices",
-    "schema_migrations",
-  ];
-  // One advisory lock covers schema creation and the int4 rewrite, so two
-  // cold starts cannot both insert the same pg_type row or rewrite a table.
-  await sql.begin(async (tx) => {
-    await tx.unsafe(
-      "select set_config('lock_timeout', '8000', true), set_config('statement_timeout', '30000', true)",
-    );
-    await tx.unsafe(`select pg_advisory_xact_lock(${MILLIS_ADVISORY_LOCK})`);
-    for (const statement of sqlStatements(schema)) await tx.unsafe(statement);
-    await tx.unsafe("ALTER TABLE access_requests ADD COLUMN IF NOT EXISTS plan text");
-    const roles = await tx`
-      select rolname from pg_roles where rolname in ('anon', 'authenticated')
-    `;
-    for (const role of roles) {
-      if (role.rolname !== "anon" && role.rolname !== "authenticated") continue;
-      await tx.unsafe(
-        `REVOKE ALL ON TABLE users, grants, access_requests, attempts, sessions, audit, runs FROM ${role.rolname}`,
-      );
-    }
-    for (const statement of sqlStatements(paymentTables)) await tx.unsafe(statement);
-    await applyMillis(tx);
-    for (const statement of sqlStatements(smsTables)) await tx.unsafe(statement);
-    for (const statement of sqlStatements(sessionTables)) await tx.unsafe(statement);
-    await tx.unsafe("ALTER TABLE audit ADD COLUMN IF NOT EXISTS detail text");
-    for (const table of locked)
-      await tx.unsafe(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`);
-    for (const table of ["orders", "entitlements"]) {
-      await tx.unsafe(`CREATE SEQUENCE IF NOT EXISTS ${table}_id_seq`);
-      await tx.unsafe(
-        `ALTER TABLE ${table} ALTER COLUMN id SET DEFAULT nextval('${table}_id_seq')`,
-      );
-      await tx.unsafe(`ALTER SEQUENCE ${table}_id_seq OWNED BY ${table}.id`);
-      await tx.unsafe(
-        `SELECT setval('${table}_id_seq', GREATEST(COALESCE((SELECT MAX(id) FROM ${table}), 0), 1))`,
-      );
-    }
-    for (const role of roles) {
-      if (role.rolname !== "anon" && role.rolname !== "authenticated") continue;
-      await tx.unsafe(`REVOKE ALL ON TABLE ${locked.join(", ")} FROM ${role.rolname}`);
-      await tx.unsafe(
-        `REVOKE ALL ON SEQUENCE orders_id_seq, entitlements_id_seq FROM ${role.rolname}`,
-      );
-    }
+}
+
+// postgres.js 3.4 is not a node-postgres Pool, which is the shape
+// attachDatabasePool recognizes. On Vercel, mirror that shape and emit
+// "release" when a query settles so Fluid can wait out idle_timeout.
+async function attachVercelPool(sql) {
+  if (process.env.VERCEL !== "1") return sql;
+  let attachDatabasePool;
+  try {
+    ({ attachDatabasePool } = await import("@vercel/functions"));
+  } catch {
+    return sql;
+  }
+  if (typeof attachDatabasePool !== "function") return sql;
+  const emitter = new EventEmitter();
+  attachDatabasePool({
+    options: { idleTimeoutMillis: POOL_IDLE_SECONDS * 1000 },
+    on(event, listener) {
+      emitter.on(event, listener);
+      return this;
+    },
   });
-  const api = {
+  const track = (query) =>
+    Promise.resolve(query).finally(() => emitter.emit("release"));
+  return new Proxy(sql, {
+    apply(target, thisArg, args) {
+      return track(Reflect.apply(target, thisArg, args));
+    },
+    get(target, prop, receiver) {
+      if (prop === "unsafe" || prop === "begin" || prop === "file")
+        return (...args) => track(target[prop](...args));
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+function postgresApi(sql) {
+  return {
     dialect: "postgres",
     ...queryApi(sql),
     // set_config(..., true) is LOCAL to this transaction, so it stays on the
-    // one pooler server connection and cannot leak into the next checkout.
-    // A stuck FOR UPDATE then fails instead of holding the only client forever.
+    // checked-out pooler connection and cannot leak into the next checkout.
     transaction: (fn, options = {}) =>
       sql.begin(async (tx) => {
         const lock = timeoutMs("lock_timeout", options.lockTimeoutMs, 2000);
@@ -327,9 +316,45 @@ async function initializePostgres(sql) {
       }),
     close: () => sql.end({ timeout: 5 }),
   };
-  await expireInvitations(api);
-  await migrateLegacyGrants(api);
-  return api;
+}
+
+export async function openPostgres(connectionString, options = {}) {
+  const max = options.max ?? poolMax();
+  const sql = await attachVercelPool(
+    postgres(connectionString, {
+      max,
+      // Transaction-mode pooler (Supabase port 6543) drops named prepared
+      // statements between transactions. prepare:false keeps every query
+      // unnamed. In postgres.js 3.4.9 a parameterized unsafe() query then
+      // Describe-s before Bind, so that query is two round trips. A query
+      // with no parameters uses the simple protocol and stays one round trip.
+      // Named prepares would be one round trip after the first call, and the
+      // pooler cannot keep them.
+      prepare: false,
+      ssl: postgresSsl(connectionString),
+      idle_timeout: POOL_IDLE_SECONDS,
+      connect_timeout: 30,
+      onnotice,
+      types: {
+        bigint: {
+          to: 20,
+          from: [20],
+          serialize: (value) => String(value),
+          parse: (value) => Number(value),
+        },
+      },
+    }),
+  );
+  try {
+    const migrate =
+      options.migrate ?? process.env.RUN_MIGRATIONS_ON_BOOT === "1";
+    if (migrate) await runMigrations(sql);
+    else await assertMigrated(sql);
+    return postgresApi(sql);
+  } catch (error) {
+    await sql.end({ timeout: 5 }).catch(() => {});
+    throw error;
+  }
 }
 
 export class SqliteSessionStore extends session.Store {
@@ -361,7 +386,12 @@ export class SqliteSessionStore extends session.Store {
             return save();
           })
       : save();
-    work.then(() => cb()).catch(cb);
+    work
+      .then(() => {
+        this.noteTouch(sid);
+        cb();
+      })
+      .catch(cb);
   }
   destroy(sid, cb = () => {}) {
     this.db
@@ -369,12 +399,47 @@ export class SqliteSessionStore extends session.Store {
       .then(() => cb())
       .catch(cb);
   }
+  noteTouch(sid) {
+    if (!this.touchedAt) this.touchedAt = new Map();
+    this.touchedAt.set(sid, Date.now());
+    if (this.touchedAt.size > 2000) {
+      const oldest = this.touchedAt.keys().next().value;
+      this.touchedAt.delete(oldest);
+    }
+  }
+  recentlyTouched(sid) {
+    const last = this.touchedAt?.get(sid) || 0;
+    return Date.now() - last < 600000;
+  }
   touch(sid, value, cb = () => {}) {
-    const expires = value.cookie?.expires
-      ? new Date(value.cookie.expires).getTime()
-      : Date.now() + 86400000;
-    this.db
-      .run("UPDATE sessions SET expires=? WHERE sid=?", [expires, sid])
+    const jobs = [];
+    if (Date.now() - (this.cleanedAt || 0) > 600000) {
+      this.cleanedAt = Date.now();
+      jobs.push(
+        this.db
+          .run("DELETE FROM sessions WHERE expires<=?", [Date.now()])
+          .catch(() => {}),
+      );
+    }
+    // Cookie expiry is not rolled. Rewriting the row on every request does
+    // not extend the browser cookie, so once per 10 minutes is enough.
+    if (!this.recentlyTouched(sid)) {
+      this.noteTouch(sid);
+      const expires = value.cookie?.expires
+        ? new Date(value.cookie.expires).getTime()
+        : Date.now() + 86400000;
+      jobs.push(
+        this.db.run("UPDATE sessions SET expires=? WHERE sid=?", [
+          expires,
+          sid,
+        ]),
+      );
+    }
+    if (!jobs.length) {
+      cb();
+      return;
+    }
+    Promise.all(jobs)
       .then(() => cb())
       .catch(cb);
   }

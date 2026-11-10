@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS entitlements (
 );
 CREATE INDEX IF NOT EXISTS entitlements_user ON entitlements (user_id, ends_at);
 CREATE INDEX IF NOT EXISTS entitlements_email ON entitlements (email);
+CREATE INDEX IF NOT EXISTS entitlements_email_lower ON entitlements (lower(email));
+CREATE INDEX IF NOT EXISTS orders_user ON orders (user_id, created_at);
 `;
 
 export function orderCode() {
@@ -43,15 +45,20 @@ export function orderCode() {
 
 export async function activeEntitlement(db, user, now) {
   if (!user) return null;
+  const email = String(user.email).toLowerCase();
+  const recent = now - 30 * DAY;
+  // Two branches so user_id and lower(email) can each use an index.
   return db.get(
-    `SELECT id, ends_at, source FROM entitlements
-     WHERE starts_at<=? AND ends_at>?
-       AND (
-         user_id=?
-         OR (user_id IS NULL AND lower(email)=? AND CAST(created_at AS bigint)>=?)
-       )
+    `SELECT id, ends_at, source FROM (
+       SELECT id, ends_at, source FROM entitlements
+       WHERE user_id=? AND starts_at<=? AND ends_at>?
+       UNION ALL
+       SELECT id, ends_at, source FROM entitlements
+       WHERE user_id IS NULL AND lower(email)=? AND starts_at<=? AND ends_at>?
+         AND CAST(created_at AS bigint)>=?
+     ) matched
      ORDER BY ends_at DESC`,
-    [now, now, user.id, String(user.email).toLowerCase(), now - 30 * DAY],
+    [user.id, now, now, email, now, now, recent],
   );
 }
 
@@ -77,7 +84,10 @@ export async function migrateLegacyGrants(db) {
   return { leftoverGrants: Number(row?.n || 0) };
 }
 
-export async function grantTimedAccess(db, { userId, days, actorId, now, note }) {
+export async function grantTimedAccess(
+  db,
+  { userId, days, actorId, now, note },
+) {
   if (days !== 7 && days !== 30) return { error: "invalid_duration" };
   const user = await db.get("SELECT id,email FROM users WHERE id=?", [userId]);
   if (!user) return { error: "not_found" };
@@ -117,7 +127,9 @@ export async function revokeOrder(db, { code, actorId, now, note }) {
     [order.id],
   );
   if (!claimed) return { error: "invalid_status" };
-  const payer = await db.get("SELECT id,email FROM users WHERE id=?", [order.user_id]);
+  const payer = await db.get("SELECT id,email FROM users WHERE id=?", [
+    order.user_id,
+  ]);
   const still = await db.get(
     "SELECT 1 AS ok FROM entitlements WHERE user_id=? AND ends_at>?",
     [payer.id, now],
@@ -162,7 +174,8 @@ export async function revokeOrder(db, { code, actorId, now, note }) {
 function friendsOf(body, payer) {
   const list = Array.isArray(body.friends) ? body.friends : [];
   const emails = list.map((email) => String(email).trim().toLowerCase());
-  if (new Set(emails).size !== emails.length) return { error: "duplicate_email" };
+  if (new Set(emails).size !== emails.length)
+    return { error: "duplicate_email" };
   if (emails.includes(String(payer).toLowerCase()))
     return { error: "own_email" };
   if (emails.some((email) => !emailPattern.test(email)))
@@ -211,7 +224,10 @@ export async function createOrder(db, user, body, now = Date.now()) {
   return { order: await db.get("SELECT * FROM orders WHERE code=?", [code]) };
 }
 
-export async function activateOrder(db, { code, actorId, now, note, source = "manual" }) {
+export async function activateOrder(
+  db,
+  { code, actorId, now, note, source = "manual" },
+) {
   const order = await db.get("SELECT * FROM orders WHERE code=?", [code]);
   if (!order) return { error: "not_found" };
   if (order.status === "paid") return { order, alreadyPaid: true };
@@ -223,7 +239,8 @@ export async function activateOrder(db, { code, actorId, now, note, source = "ma
   );
   if (!claimed) {
     const current = await db.get("SELECT * FROM orders WHERE id=?", [order.id]);
-    if (current?.status === "paid") return { order: current, alreadyPaid: true };
+    if (current?.status === "paid")
+      return { order: current, alreadyPaid: true };
     return { error: "invalid_status" };
   }
   const user = await db.get("SELECT id,email FROM users WHERE id=?", [
@@ -238,7 +255,16 @@ export async function activateOrder(db, { code, actorId, now, note, source = "ma
   const entitlementSource = source === "sms" ? "sms" : "manual";
   await db.run(
     "INSERT INTO entitlements (user_id,email,starts_at,ends_at,source,order_id,created_by,created_at) VALUES (?,?,?,?,?,?,?,?)",
-    [user.id, user.email.toLowerCase(), start, end, entitlementSource, order.id, actorId, now],
+    [
+      user.id,
+      user.email.toLowerCase(),
+      start,
+      end,
+      entitlementSource,
+      order.id,
+      actorId,
+      now,
+    ],
   );
   for (const email of JSON.parse(order.friend_emails || "[]")) {
     await db.run(
