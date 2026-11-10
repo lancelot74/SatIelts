@@ -64,7 +64,7 @@
   ],
   "functions": {
     "api/index.mjs": {
-      "includeFiles": "content/*.json,server/schema.postgres.sql,migrations/*.sql",
+      "includeFiles": "{content/*.json,server/schema.postgres.sql,migrations/*.sql}",
       "excludeFiles": "{public,private}/media/**"
     }
   }

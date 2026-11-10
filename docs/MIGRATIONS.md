@@ -16,12 +16,21 @@ DATABASE_URL='postgres://study:study@127.0.0.1:5432/studyroom' npm run migrate
 
 A second run does nothing if every file is already recorded.
 
+## Deploy order
+
+1. Apply the migrations to the database this deploy will use. Run `npm run migrate` from a trusted machine. Prefer a direct connection or the session pooler for DDL. Do not point a preview or a Vercel build at the production URL.
+2. Check that `schema_migrations` contains the latest file name, currently `2026-11-10-runtime`.
+3. Deploy or promote the application. `vercel.json` only runs `npm run build`. It does not migrate.
+4. Open `/api/health` and confirm `"database": "postgres"`.
+
+`RUN_MIGRATIONS_ON_BOOT` must stay unset in production and in any preview that shares the production database.
+
+If traffic hits an instance before step 1, that instance answers `migration_required` and tries again after about 5 seconds. A later migration repairs those instances without a restart. Any other boot failure stays failed until the process is replaced.
+
+## Index builds
+
+`2026-11-10-baseline.sql` creates `entitlements_email_lower`, `orders_user`, and `account_notices_email_lower` inside its transaction. PostgreSQL blocks writes to a table while a normal `CREATE INDEX` runs. Those tables store purchases, grants, and short notices for one academy, so the lock is expected to be brief. `CREATE INDEX CONCURRENTLY` cannot run inside the runner's transaction. Add a separate file, executed outside the transaction, only if one of those tables becomes large enough for the lock to matter.
+
 ## Production
-
-Run the same command from a trusted machine, with `DATABASE_URL` set to the database you intend to change. Prefer the session pooler or a direct connection for DDL. The transaction pooler can apply this migration, but it is a poor place for later migrations that need a session-level lock.
-
-Apply the migration before deploying a build that expects the new version. Until `2026-11-10-baseline` is recorded, production instances will refuse to boot rather than change the schema themselves.
-
-To run it as a Vercel build step later, set `DATABASE_URL` on the project and change the build command to `npm run migrate && npm run build`. That wiring is intentionally not in this change. Do not point a build at production until you have run the migration yourself and checked `/api/health`.
 
 `server/migrations/2026-11-08-millis-bigint.sql` remains the manual script for the older integer-to-bigint rewrite. The baseline file includes that rewrite, so a normal `npm run migrate` covers it.

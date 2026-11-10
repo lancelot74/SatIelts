@@ -57,7 +57,8 @@ export async function activeEntitlement(db, user, now) {
        WHERE user_id IS NULL AND lower(email)=? AND starts_at<=? AND ends_at>?
          AND CAST(created_at AS bigint)>=?
      ) matched
-     ORDER BY ends_at DESC`,
+     ORDER BY ends_at DESC
+     LIMIT 1`,
     [user.id, now, now, email, now, now, recent],
   );
 }
@@ -92,7 +93,7 @@ export async function grantTimedAccess(
   const user = await db.get("SELECT id,email FROM users WHERE id=?", [userId]);
   if (!user) return { error: "not_found" };
   const current = await db.get(
-    "SELECT ends_at FROM entitlements WHERE user_id=? AND ends_at>? ORDER BY ends_at DESC",
+    "SELECT ends_at FROM entitlements WHERE user_id=? AND ends_at>? ORDER BY ends_at DESC LIMIT 1",
     [user.id, now],
   );
   const start = Math.max(now, Number(current?.ends_at || 0));
@@ -247,7 +248,7 @@ export async function activateOrder(
     order.user_id,
   ]);
   const current = await db.get(
-    "SELECT ends_at FROM entitlements WHERE user_id=? AND ends_at>? ORDER BY ends_at DESC",
+    "SELECT ends_at FROM entitlements WHERE user_id=? AND ends_at>? ORDER BY ends_at DESC LIMIT 1",
     [user.id, now],
   );
   const start = Math.max(now, Number(current?.ends_at || 0));

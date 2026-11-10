@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS user_sessions (
   created_at BIGINT NOT NULL,
   last_seen BIGINT NOT NULL,
   label TEXT NOT NULL,
-  network TEXT NOT NULL
+  network TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS user_sessions_user ON user_sessions (user_id, created_at, sid_hash);
 CREATE TABLE IF NOT EXISTS account_notices (
@@ -106,8 +107,8 @@ export async function registerLogin(db, { sid, userId, now, label, network }) {
     if (db.dialect === "postgres")
       await tx.get("SELECT id FROM users WHERE id=? FOR UPDATE", [userId]);
     await tx.run(
-      "INSERT INTO user_sessions (sid_hash,sid,user_id,created_at,last_seen,label,network) VALUES (?,?,?,?,?,?,?)",
-      [hash, sid, userId, now, now, label, network],
+      "INSERT INTO user_sessions (sid_hash,sid,user_id,created_at,last_seen,label,network,active) VALUES (?,?,?,?,?,?,?,?)",
+      [hash, sid, userId, now, now, label, network, 0],
     );
   });
 }
@@ -127,8 +128,12 @@ export async function activateLogin(db, { sid, userId, now, network }) {
       [sid, userId],
     );
     if (!current) return { active: 0, dropped: 0 };
+    await tx.run(
+      "UPDATE user_sessions SET active=1, last_seen=? WHERE sid=? AND user_id=?",
+      [now, sid, userId],
+    );
     const others = await tx.all(
-      "SELECT sid, network FROM user_sessions WHERE user_id=? AND sid<>? ORDER BY created_at ASC, sid_hash ASC",
+      "SELECT sid, network FROM user_sessions WHERE user_id=? AND sid<>? AND active=1 ORDER BY created_at ASC, sid_hash ASC",
       [userId, sid],
     );
     let dropped = 0;
@@ -159,7 +164,7 @@ export async function activateLogin(db, { sid, userId, now, network }) {
 export async function touchSession(db, sid, userId, now) {
   const hash = sessionHash(sid);
   const row = await db.get(
-    "SELECT sid_hash, last_seen FROM user_sessions WHERE sid_hash=? AND user_id=?",
+    "SELECT sid_hash, last_seen FROM user_sessions WHERE sid_hash=? AND user_id=? AND active=1",
     [hash, userId],
   );
   if (!row) return false;
@@ -174,7 +179,7 @@ export async function touchSession(db, sid, userId, now) {
 export async function listSessions(db, userId, sid) {
   const current = sessionHash(sid);
   const rows = await db.all(
-    "SELECT sid_hash, created_at, last_seen, label, network FROM user_sessions WHERE user_id=? ORDER BY created_at ASC, sid_hash ASC",
+    "SELECT sid_hash, created_at, last_seen, label, network FROM user_sessions WHERE user_id=? AND active=1 ORDER BY created_at ASC, sid_hash ASC",
     [userId],
   );
   return rows.map((row) => ({

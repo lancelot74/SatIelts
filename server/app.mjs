@@ -12,6 +12,11 @@ import path from "node:path";
 import fs from "node:fs";
 import { OAuth2Client } from "google-auth-library";
 import { SqliteSessionStore, prepareRuns } from "./db.mjs";
+import { scheduleRetention } from "./retention.mjs";
+import {
+  DatabaseRateLimitStore,
+  useDatabaseRateLimits,
+} from "./rate-limit-store.mjs";
 import { exams, examById } from "./content.mjs";
 import {
   getTest,
@@ -143,6 +148,7 @@ function publicOrder(order) {
 export function createApp({ db, config, oauthClient, now = Date.now }) {
   prepareRuns(db);
   catalogBody();
+  scheduleRetention(db);
   const app = express();
   const oauth =
     oauthClient ??
@@ -194,6 +200,27 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
     res.set("Cache-Control", PUBLIC_CACHE);
     res.json(guide);
   });
+  const limitStore = () =>
+    useDatabaseRateLimits() ? new DatabaseRateLimitStore(db) : undefined;
+  const withStore = (options) => {
+    const store = limitStore();
+    return rateLimit(store ? { ...options, store } : options);
+  };
+  const limitIp = (limit, windowMs) =>
+    withStore({
+      windowMs,
+      limit,
+      keyGenerator: (req) => ipKeyGenerator(req.ip || "127.0.0.1"),
+    });
+  const limitUser = (limit, windowMs) =>
+    withStore({
+      windowMs,
+      limit,
+      keyGenerator: (req) => `user:${req.user.id}`,
+      skip: (req) => !req.user,
+    });
+  // Sign-in is limited before a session row is touched.
+  app.use("/api/auth", limitIp(120, 15 * 60 * 1000));
   const sessionMiddleware = session({
     name: "studyroom.sid",
     secret: config.sessionSecret,
@@ -236,17 +263,19 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
       if (req.session?.userId) {
         const hash = sessionHash(req.sessionID);
         const row = await db.get(
-          `SELECT u.id, u.email, u.name, u.google_sub, us.last_seen
+          `SELECT u.id, u.email, u.name, u.google_sub, us.last_seen, us.active
          FROM users u
          LEFT JOIN user_sessions us ON us.user_id=u.id AND us.sid_hash=?
          WHERE u.id=?`,
           [hash, req.session.userId],
         );
-        if (!row) {
-          req.user = null;
-        } else if (row.last_seen == null) {
-          await new Promise((resolve) => req.session.destroy(() => resolve()));
-        } else {
+      if (!row) {
+        req.user = null;
+      } else if (row.last_seen == null) {
+        await new Promise((resolve) => req.session.destroy(() => resolve()));
+      } else if (Number(row.active) === 0) {
+        req.user = null;
+      } else {
           req.user = {
             id: asNumber(row.id),
             email: row.email,
@@ -263,11 +292,14 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
       req.isAdmin = Boolean(ownerSub) && req.user?.google_sub === ownerSub;
       if (!req.session) return next();
       if (!["GET", "HEAD", "OPTIONS"].includes(req.method)) {
-        const expected = req.session.csrf || readCookie(req, CSRF_COOKIE);
-        if (
-          (req.get("origin") && req.get("origin") !== config.origin) ||
-          !same(req.get("x-csrf-token"), expected)
-        )
+      const bodyToken =
+        req.body && typeof req.body.csrf === "string" ? req.body.csrf : "";
+      const expected = req.session.csrf || readCookie(req, CSRF_COOKIE);
+      const provided = req.get("x-csrf-token") || bodyToken;
+      if (
+        (req.get("origin") && req.get("origin") !== config.origin) ||
+        !same(provided, expected)
+      )
           return res.status(403).json({ error: "csrf" });
       }
       next();
@@ -340,7 +372,7 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
           listSessions(db, req.user.id, req.sessionID),
           listNotices(db, req.user),
           db.all(
-            "SELECT code,plan,group_size,amount_mnt,status,expires_at,paid_at FROM orders WHERE user_id=? ORDER BY created_at DESC",
+            "SELECT code,plan,group_size,amount_mnt,status,expires_at,paid_at FROM orders WHERE user_id=? ORDER BY created_at DESC LIMIT 20",
             [req.user.id],
           ),
           db.all(
@@ -370,22 +402,9 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
       next(error);
     }
   });
-  const limitIp = (limit, windowMs) =>
-    rateLimit({
-      windowMs,
-      limit,
-      keyGenerator: (req) => ipKeyGenerator(req.ip || "127.0.0.1"),
-    });
-  const limitUser = (limit, windowMs) =>
-    rateLimit({
-      windowMs,
-      limit,
-      keyGenerator: (req) => `user:${req.user.id}`,
-      skip: (req) => !req.user,
-    });
-  // The default store is in memory and per instance. A limit is not shared
-  // across Vercel isolates and resets when an isolate goes cold.
-  app.get("/api/auth/google", limitIp(120, 15 * 60 * 1000), (req, res) => {
+  // In-memory counters are per instance. RATE_LIMIT_STORE=postgres shares them
+  // through rate_limit_hits. There is no Upstash client in this process.
+  app.get("/api/auth/google", (req, res) => {
     if (!authAvailable) return res.redirect("/login?error=not_configured");
     const verifier = random();
     const state = random();
@@ -597,13 +616,14 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
           }
           req.session.runs = [...ids, run.id].slice(-25);
         }
-        res.json({
-          runId: run.id,
-          deadline: run.deadline,
-          serverNow: now(),
-          answers: JSON.parse(run.answers),
-          test: publicTest(test),
-        });
+      res.json({
+        runId: run.id,
+        deadline: run.deadline,
+        serverNow: now(),
+        answers: JSON.parse(run.answers),
+        answersRev: Number(run.answers_rev) || 0,
+        test: publicTest(test),
+      });
       } catch (error) {
         next(error);
       }
@@ -654,11 +674,32 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
         return res.status(409).json({ error: "time_up" });
       if (!validAnswers(test, req.body.answers))
         return res.status(400).json({ error: "invalid_answers" });
-      await db.run("UPDATE runs SET answers=? WHERE id=?", [
-        JSON.stringify(req.body.answers),
-        run.id,
-      ]);
-      res.json({ saved: true, serverNow: now() });
+      const stored = Number(run.answers_rev) || 0;
+      const rev =
+        Number.isInteger(req.body?.revision) && req.body.revision > 0
+          ? req.body.revision
+          : stored + 1;
+      const updated = await db.get(
+        `UPDATE runs SET answers=?, answers_rev=?
+         WHERE id=? AND result IS NULL AND deadline>? AND answers_rev<?
+         RETURNING answers_rev`,
+        [JSON.stringify(req.body.answers), rev, run.id, now(), rev],
+      );
+      if (!updated) {
+        const current = await db.get(
+          "SELECT answers_rev, result, deadline FROM runs WHERE id=?",
+          [run.id],
+        );
+        if (!current || current.result || now() >= Number(current.deadline))
+          return res.status(409).json({ error: "time_up" });
+        return res.json({
+          saved: true,
+          stale: true,
+          revision: Number(current.answers_rev) || 0,
+          serverNow: now(),
+        });
+      }
+      res.json({ saved: true, revision: rev, serverNow: now() });
     } catch (error) {
       next(error);
     }
@@ -669,11 +710,20 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
         test = getTest(run.exam, run.test_number);
       if (run.result) return res.json(JSON.parse(run.result));
       let answers = JSON.parse(run.answers);
+      let rev = Number(run.answers_rev) || 0;
       const expired = now() >= run.deadline;
+      // Once the deadline has passed, the body is ignored. The client flushes
+      // the latest answers while time remains, including in the last few seconds.
       if (!expired && req.body.answers !== undefined) {
         if (!validAnswers(test, req.body.answers))
           return res.status(400).json({ error: "invalid_answers" });
-        answers = req.body.answers;
+        const incoming = Number.isInteger(req.body.revision)
+          ? req.body.revision
+          : rev;
+        if (incoming >= rev) {
+          answers = req.body.answers;
+          rev = incoming;
+        }
       }
       const result = {
         ...grade(test, answers),
@@ -688,11 +738,18 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
           (Math.min(now(), run.deadline) - run.started_at) / 1000,
         ),
       };
-      await db.run(
-        "UPDATE runs SET result=?,answers=?,finished_at=? WHERE id=?",
-        [JSON.stringify(result), JSON.stringify(answers), now(), run.id],
+      const claimed = await db.get(
+        "UPDATE runs SET result=?, answers=?, answers_rev=?, finished_at=? WHERE id=? AND result IS NULL RETURNING result",
+        [JSON.stringify(result), JSON.stringify(answers), rev, now(), run.id],
       );
-      res.json(result);
+      if (!claimed) {
+        const current = await db.get("SELECT result FROM runs WHERE id=?", [
+          run.id,
+        ]);
+        if (current?.result) return res.json(JSON.parse(current.result));
+        return res.status(409).json({ error: "time_up" });
+      }
+      res.json(JSON.parse(claimed.result));
     } catch (error) {
       next(error);
     }

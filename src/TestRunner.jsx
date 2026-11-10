@@ -3,12 +3,15 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft,
   ArrowRight,
+  BookOpen,
   Check,
+  CheckCircle2,
   Clock3,
   Flag,
   Languages,
   PenLine,
 } from "lucide-react";
+import { createSaveQueue, deliverSave, nextDelay } from "./save-queue.js";
 import { PracticeAudio, VoiceResponse } from "./PracticeMedia.jsx";
 import {
   Breadcrumb,
@@ -105,9 +108,11 @@ function Player({ initial, exam, onFinish }) {
     [error, setError] = useState(null);
   const answersRef = useRef(answers),
     saveTimer = useRef(null),
-    queue = useRef(Promise.resolve()),
+    queue = useRef(createSaveQueue()),
     done = useRef(false),
-    dirty = useRef(false),
+    dirtySince = useRef(0),
+    revisionRef = useRef(Number(initial.answersRev) || 0),
+    ackedRef = useRef(Number(initial.answersRev) || 0),
     csrfRef = useRef(session?.csrf || ""),
     offset = useRef(serverNow - Date.now()),
     submitRef = useRef(null);
@@ -119,28 +124,33 @@ function Player({ initial, exam, onFinish }) {
     (v) => v !== "" && v !== null,
   ).length;
   const save = useCallback(
-    (value) => {
+    (value, rev, { unloading = false } = {}) => {
+      if (!rev || rev <= ackedRef.current) return Promise.resolve();
       setSaveStatus("saving");
-      const task = queue.current
-        .catch(() => {})
-        .then(() =>
-          api(`/api/runs/${runId}/answers`, { answers: value }, "PUT"),
-        );
-      queue.current = task;
-      task
-        .then(() => {
-          if (answersRef.current === value) {
-            dirty.current = false;
+      const task = queue.current.enqueue(() =>
+        deliverSave({
+          fetchImpl: fetch,
+          beacon: navigator.sendBeacon?.bind(navigator),
+          url: `/api/runs/${runId}/answers`,
+          payload: { answers: value, revision: rev, csrf: csrfRef.current },
+          unloading,
+        }).then((result) => {
+          const accepted = Number(result.body?.revision || rev);
+          if (accepted >= rev) ackedRef.current = Math.max(ackedRef.current, accepted);
+          if (ackedRef.current >= revisionRef.current) {
+            dirtySince.current = 0;
             setSaveStatus("saved");
           }
-        })
-        .catch((e) => {
-          dirty.current = true;
-          if (e.message !== "time_up") setSaveStatus("saveFailed");
-        });
+          return result;
+        }),
+      );
+      task.catch((error) => {
+        if (error?.message === "time_up") return;
+        setSaveStatus("saveFailed");
+      });
       return task;
     },
-    [runId, api],
+    [runId],
   );
   useEffect(() => {
     const ticker = setInterval(() => {
@@ -163,55 +173,52 @@ function Player({ initial, exam, onFinish }) {
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
   }, []);
-  const flushNow = useCallback(() => {
-    if (!dirty.current || done.current) return;
-    clearTimeout(saveTimer.current);
-    saveTimer.current = null;
-    const value = answersRef.current;
-    dirty.current = false;
-    const body = JSON.stringify({ answers: value });
-    fetch(`/api/runs/${runId}/answers`, {
-      method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-        "x-csrf-token": csrfRef.current,
-      },
-      body,
-      keepalive: true,
-      credentials: "same-origin",
-    }).catch(() => {
-      dirty.current = true;
-    });
-  }, [runId]);
+  const flushNow = useCallback(
+    (unloading = true) => {
+      if (done.current || revisionRef.current <= ackedRef.current) return;
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+      return save(answersRef.current, revisionRef.current, { unloading });
+    },
+    [save],
+  );
   useEffect(() => {
     const onHide = () => {
-      if (document.visibilityState === "hidden") flushNow();
+      if (document.visibilityState === "hidden") flushNow(true);
+      else if (revisionRef.current > ackedRef.current) flushNow(false);
     };
-    window.addEventListener("pagehide", flushNow);
+    const onPageHide = () => flushNow(true);
+    window.addEventListener("pagehide", onPageHide);
     document.addEventListener("visibilitychange", onHide);
     return () => {
-      window.removeEventListener("pagehide", flushNow);
+      window.removeEventListener("pagehide", onPageHide);
       document.removeEventListener("visibilitychange", onHide);
-      flushNow();
+      flushNow(true);
     };
   }, [flushNow]);
   useEffect(() => {
     if (saveStatus !== "saveFailed") return;
-    const retry = setTimeout(() => save(answersRef.current), 3000);
+    const retry = setTimeout(
+      () => save(answersRef.current, revisionRef.current),
+      3000,
+    );
     return () => clearTimeout(retry);
   }, [saveStatus, save]);
   function scheduleSave() {
-    dirty.current = true;
+    if (!dirtySince.current) dirtySince.current = Date.now();
     clearTimeout(saveTimer.current);
     setSaveStatus("saving");
+    const remaining = deadline - Date.now() - offset.current;
+    const delay = nextDelay(Date.now(), dirtySince.current, remaining);
     saveTimer.current = setTimeout(() => {
       saveTimer.current = null;
-      save(answersRef.current);
-    }, 1500);
+      save(answersRef.current, revisionRef.current);
+    }, delay);
   }
   function answer(value) {
     const next = { ...answersRef.current, [question.id]: value };
     answersRef.current = next;
+    revisionRef.current += 1;
     setAnswers(next);
     scheduleSave();
   }
@@ -222,16 +229,19 @@ function Player({ initial, exam, onFinish }) {
     setError(null);
     clearTimeout(saveTimer.current);
     saveTimer.current = null;
-    dirty.current = false;
     try {
-      await queue.current.catch(() => {});
+      if (revisionRef.current > ackedRef.current)
+        await save(answersRef.current, revisionRef.current).catch(() => {});
+      await queue.current.wait();
       const result = await api(`/api/runs/${runId}/submit`, {
         answers: answersRef.current,
+        revision: revisionRef.current,
       });
+      ackedRef.current = revisionRef.current;
+      dirtySince.current = 0;
       onFinish(result);
     } catch (e) {
       done.current = false;
-      dirty.current = true;
       setError(e);
       setBusy(false);
     }
@@ -245,12 +255,12 @@ function Player({ initial, exam, onFinish }) {
   async function leave() {
     setBusy(true);
     try {
-      if (dirty.current) {
+      if (revisionRef.current > ackedRef.current) {
         clearTimeout(saveTimer.current);
         saveTimer.current = null;
-        await save(answersRef.current);
+        await save(answersRef.current, revisionRef.current);
       }
-      await queue.current;
+      await queue.current.wait();
       done.current = true;
       navigate(`/${exam.id}`);
     } catch (e) {

@@ -91,6 +91,12 @@ test("hosted postgres uses portable timestamps, placeholders, and locked-down ta
   assert.equal(boot.includes("enable row level security"), true);
   assert.equal(boot.includes("revoke all on table"), true);
   assert.equal(boot.includes("revoke all on sequence orders_id_seq, entitlements_id_seq"), true);
+  const vercel = JSON.parse(fs.readFileSync(new URL("../vercel.json", import.meta.url), "utf8"));
+  const include = vercel.functions["api/index.mjs"].includeFiles;
+  assert.equal(include.startsWith("{"), true);
+  assert.equal(include.endsWith("}"), true);
+  for (const pattern of ["content/*.json", "server/schema.postgres.sql", "migrations/*.sql"])
+    assert.equal(include.includes(pattern), true);
   assert.equal(fs.existsSync("public/media/ielts/01/listening-part1.mp3"), true);
 });
 test("health reports the open database", async () => {

@@ -14,7 +14,7 @@ const sqliteSchema = `PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
  CREATE TABLE IF NOT EXISTS attempts (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id), exam TEXT NOT NULL, score INTEGER NOT NULL, total INTEGER NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
  CREATE TABLE IF NOT EXISTS sessions (sid TEXT PRIMARY KEY, data TEXT NOT NULL, expires INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY, actor_id INTEGER REFERENCES users(id), user_id INTEGER REFERENCES users(id), exam TEXT NOT NULL, action TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
- CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, user_id INTEGER REFERENCES users(id), exam TEXT NOT NULL, test_number TEXT NOT NULL, started_at INTEGER NOT NULL, deadline INTEGER NOT NULL, answers TEXT NOT NULL DEFAULT '{}', result TEXT, finished_at INTEGER);
+ CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, user_id INTEGER REFERENCES users(id), exam TEXT NOT NULL, test_number TEXT NOT NULL, started_at INTEGER NOT NULL, deadline INTEGER NOT NULL, answers TEXT NOT NULL DEFAULT '{}', answers_rev INTEGER NOT NULL DEFAULT 0, result TEXT, finished_at INTEGER);
  CREATE INDEX IF NOT EXISTS runs_lookup ON runs (user_id, exam, test_number);
  CREATE INDEX IF NOT EXISTS sessions_expires ON sessions (expires);`;
 
@@ -42,6 +42,27 @@ export function openDatabase(path) {
   raw.exec(paymentTables);
   raw.exec(smsTables);
   raw.exec(sessionTables);
+  raw.exec(
+    `CREATE TABLE IF NOT EXISTS rate_limit_hits (
+      bucket TEXT NOT NULL,
+      window_start INTEGER NOT NULL,
+      hits INTEGER NOT NULL,
+      PRIMARY KEY (bucket, window_start)
+    );`,
+  );
+  const runColumns = raw.prepare("PRAGMA table_info(runs)").all();
+  if (!runColumns.some((column) => column.name === "answers_rev"))
+    raw.exec(
+      "ALTER TABLE runs ADD COLUMN answers_rev INTEGER NOT NULL DEFAULT 0",
+    );
+  const sessionColumns = raw.prepare("PRAGMA table_info(user_sessions)").all();
+  if (
+    sessionColumns.length &&
+    !sessionColumns.some((column) => column.name === "active")
+  )
+    raw.exec(
+      "ALTER TABLE user_sessions ADD COLUMN active INTEGER NOT NULL DEFAULT 1",
+    );
   const audit = raw.prepare("PRAGMA table_info(audit)").all();
   if (!audit.some((column) => column.name === "detail"))
     raw.exec("ALTER TABLE audit ADD COLUMN detail TEXT");
@@ -234,6 +255,8 @@ export function postgresSsl(connectionString) {
 
 const POOL_IDLE_SECONDS = 20;
 
+// Five connections per warm instance. See docs/CONNECTIONS.md for the
+// fleet budget against the Supabase pooler client limit.
 export function poolMax(env = process.env) {
   const raw = env.PG_POOL_MAX;
   if (raw == null || raw === "") return 5;
@@ -375,18 +398,8 @@ export class SqliteSessionStore extends session.Store {
     const expires = value.cookie?.expires
       ? new Date(value.cookie.expires).getTime()
       : Date.now() + 86400000;
-    const save = () =>
-      this.db.run(sessionUpsert, [sid, JSON.stringify(value), expires]);
-    const due = Date.now() - (this.cleanedAt || 0) > 600000;
-    const work = due
-      ? this.db
-          .run("DELETE FROM sessions WHERE expires<=?", [Date.now()])
-          .then(() => {
-            this.cleanedAt = Date.now();
-            return save();
-          })
-      : save();
-    work
+    this.db
+      .run(sessionUpsert, [sid, JSON.stringify(value), expires])
       .then(() => {
         this.noteTouch(sid);
         cb();
@@ -413,16 +426,9 @@ export class SqliteSessionStore extends session.Store {
   }
   touch(sid, value, cb = () => {}) {
     const jobs = [];
-    if (Date.now() - (this.cleanedAt || 0) > 600000) {
-      this.cleanedAt = Date.now();
-      jobs.push(
-        this.db
-          .run("DELETE FROM sessions WHERE expires<=?", [Date.now()])
-          .catch(() => {}),
-      );
-    }
     // Cookie expiry is not rolled. Rewriting the row on every request does
     // not extend the browser cookie, so once per 10 minutes is enough.
+    // Expired-row deletion is not done here. scheduleRetention owns that.
     if (!this.recentlyTouched(sid)) {
       this.noteTouch(sid);
       const expires = value.cookie?.expires
@@ -448,7 +454,7 @@ export class SqliteSessionStore extends session.Store {
 export function prepareRuns(db) {
   if (!db.raw) return;
   db.raw.exec(
-    `CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, user_id INTEGER REFERENCES users(id), exam TEXT NOT NULL, test_number TEXT NOT NULL, started_at INTEGER NOT NULL, deadline INTEGER NOT NULL, answers TEXT NOT NULL DEFAULT '{}', result TEXT, finished_at INTEGER);
+    `CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, user_id INTEGER REFERENCES users(id), exam TEXT NOT NULL, test_number TEXT NOT NULL, started_at INTEGER NOT NULL, deadline INTEGER NOT NULL, answers TEXT NOT NULL DEFAULT '{}', answers_rev INTEGER NOT NULL DEFAULT 0, result TEXT, finished_at INTEGER);
      CREATE INDEX IF NOT EXISTS runs_lookup ON runs (user_id, exam, test_number);`,
   );
 }

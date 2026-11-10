@@ -102,6 +102,11 @@ create table if not exists entitlements (
 
 create index if not exists entitlements_user on entitlements (user_id, ends_at);
 create index if not exists entitlements_email on entitlements (email);
+-- These three indexes are built inside the migration transaction, which blocks
+-- writes on each table for the build. orders, entitlements, and account_notices
+-- hold one row per purchase, grant, or notice for a single academy, so the lock
+-- is expected to be brief. CREATE INDEX CONCURRENTLY cannot run in this
+-- transaction. Use it in a later file only if one of these tables grows large.
 create index if not exists entitlements_email_lower on entitlements (lower(email));
 create index if not exists orders_user on orders (user_id, created_at);
 

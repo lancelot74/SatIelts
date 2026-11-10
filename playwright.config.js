@@ -7,7 +7,11 @@ export default defineConfig({
   use: {
     baseURL: "http://localhost:4173",
     launchOptions: {
-      executablePath: process.env.CHROMIUM_PATH || "/usr/bin/chromium",
+      ...(process.env.CHROMIUM_PATH
+        ? { executablePath: process.env.CHROMIUM_PATH }
+        : process.env.CI
+          ? {}
+          : { executablePath: "/usr/bin/chromium" }),
       args: ["--no-sandbox", "--use-fake-device-for-media-stream"],
     },
     screenshot: "only-on-failure",
