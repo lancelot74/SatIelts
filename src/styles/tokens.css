@@ -7,14 +7,8 @@
    never use them for text.
    ========================================================================== */
 
-/* ---- Fonts: Noto Sans variable, self-hosted, only 400 + 600 used ---------- */
-/* Put the font file in /public/fonts/. Subset to latin + cyrillic (+ ₮ U+20AE)
-   with e.g. `pyftsubset NotoSans.ttf --unicodes="U+0000-00FF,U+0400-04FF,U+2000-206F,U+20AE,U+2190-21FF" --flavor=woff2`. */
-@font-face{
-  font-family:"Noto Sans";
-  src:url("/fonts/NotoSans-var.woff2") format("woff2");
-  font-weight:400 600; font-style:normal; font-display:swap;
-}
+/* Manrope Variable is loaded from the bundle and includes Cyrillic.
+   The missing /fonts/NotoSans-var.woff2 file is not requested. */
 
 :root{
   /* ---- Neutrals ---------------------------------------------------------- */
@@ -55,7 +49,7 @@
   --exam-on-700:#FFFFFF;
 
   /* ---- Typography -------------------------------------------------------- */
-  --font-sans:"Noto Sans",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+  --font-sans:"Manrope Variable",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
   --fw-regular:400;
   --fw-semibold:600;              /* the ONLY two weights. No 700/800 anywhere. */
   --fs-12:0.75rem;   /* overline / meta labels (uppercase, letter-spacing .06em) */

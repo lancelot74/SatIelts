@@ -11,6 +11,7 @@ import {
   openPostgres,
   widenMillis,
 } from "../server/db.mjs";
+import { expectedMigration, runMigrations } from "../server/migrate.mjs";
 import { createApp } from "../server/app.mjs";
 import { priceFor } from "../src/config/pricing.js";
 import {
@@ -53,6 +54,7 @@ function optionsFor(parts, database) {
     prepare: false,
     ssl: false,
     connect_timeout: 3,
+    onnotice() {},
   };
 }
 
@@ -187,6 +189,20 @@ test("postgres login, migration, and session compensation", { timeout: 60000 }, 
       `create role ${role} login password '${rolePassword}' nosuperuser nocreatedb nocreaterole`,
     );
     roleReady = true;
+
+    const bare = await createOwned(admin, parts, created);
+    await bare.sql.end({ timeout: 1 });
+    await assert.rejects(
+      () => openPostgres(ownedUrl(parts, bare.name)),
+      /migration required/,
+    );
+    const bareCheck = await identified(parts, bare.name);
+    open.push(bareCheck);
+    const bareTables = await bareCheck`
+      select count(*)::int as n from pg_tables
+      where schemaname = 'public' and tablename = 'users'
+    `;
+    assert.equal(bareTables[0].n, 0);
 
     const legacy = await createOwned(admin, parts, created);
     const raw = legacy.sql;
@@ -327,8 +343,8 @@ test("postgres login, migration, and session compensation", { timeout: 60000 }, 
     const boots = await createOwned(admin, parts, created);
     await boots.sql.end({ timeout: 1 });
     const [bootOne, bootTwo] = await Promise.all([
-      openPostgres(ownedUrl(parts, boots.name)),
-      openPostgres(ownedUrl(parts, boots.name)),
+      openPostgres(ownedUrl(parts, boots.name), { migrate: true }),
+      openPostgres(ownedUrl(parts, boots.name), { migrate: true }),
     ]);
     await bootOne.close();
     await bootTwo.close();
@@ -340,10 +356,20 @@ test("postgres login, migration, and session compensation", { timeout: 60000 }, 
     `;
     assert.equal(bootColumn[0].data_type, "bigint");
     assert.equal((await bootCheck`select to_regclass('public.users') as name`)[0].name, "users");
+    await runMigrations(bootCheck);
+    const version = await bootCheck`
+      select count(*)::int as n from public.schema_migrations where id = ${expectedMigration()}
+    `;
+    assert.equal(version[0].n, 1);
+    const emailIndex = await bootCheck`
+      select indexdef from pg_indexes
+      where schemaname = 'public' and indexname = 'entitlements_email_lower'
+    `;
+    assert.match(emailIndex[0].indexdef, /lower\(email\)/);
 
     const fresh = await createOwned(admin, parts, created);
     await fresh.sql.end({ timeout: 1 });
-    const db = await openPostgres(ownedUrl(parts, fresh.name));
+    const db = await openPostgres(ownedUrl(parts, fresh.name), { migrate: true });
     const selected = await db.get("select current_database() as name");
     if (selected.name !== fresh.name)
       throw new Error(`openPostgres selected ${selected.name}`);

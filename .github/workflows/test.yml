@@ -33,3 +33,7 @@ jobs:
       - run: npm test
         env:
           POSTGRES_TEST_URL: postgres://study:study@127.0.0.1:5432/postgres
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test tests/browser/player-smoke.spec.js
+        env:
+          CI: "true"

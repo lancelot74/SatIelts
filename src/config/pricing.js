@@ -1,4 +1,4 @@
-export const SALE_END = Date.parse("2026-11-12T00:00:00+08:00");
+export const SALE_END = Date.parse("2026-12-01T00:00:00+08:00");
 export const stacking = true;
 
 const soloList = { week: 7000, month: 20000 };

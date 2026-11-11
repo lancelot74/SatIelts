@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS user_sessions (
   created_at BIGINT NOT NULL,
   last_seen BIGINT NOT NULL,
   label TEXT NOT NULL,
-  network TEXT NOT NULL
+  network TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS user_sessions_user ON user_sessions (user_id, created_at, sid_hash);
 CREATE TABLE IF NOT EXISTS account_notices (
@@ -23,6 +24,7 @@ CREATE TABLE IF NOT EXISTS account_notices (
   created_at BIGINT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS account_notices_user ON account_notices (user_id, created_at);
+CREATE INDEX IF NOT EXISTS account_notices_email_lower ON account_notices (lower(email), created_at);
 `;
 
 export function sessionHash(sid) {
@@ -86,7 +88,14 @@ async function addNotice(tx, { userId, email, kind, separate, now }) {
   if (recent) return;
   await tx.run(
     "INSERT INTO account_notices (id,user_id,email,kind,separate,created_at) VALUES (?,?,?,?,?,?)",
-    [randomUUID(), userId ?? null, email ? String(email).toLowerCase() : null, kind, separate ? 1 : 0, now],
+    [
+      randomUUID(),
+      userId ?? null,
+      email ? String(email).toLowerCase() : null,
+      kind,
+      separate ? 1 : 0,
+      now,
+    ],
   );
 }
 
@@ -98,8 +107,8 @@ export async function registerLogin(db, { sid, userId, now, label, network }) {
     if (db.dialect === "postgres")
       await tx.get("SELECT id FROM users WHERE id=? FOR UPDATE", [userId]);
     await tx.run(
-      "INSERT INTO user_sessions (sid_hash,sid,user_id,created_at,last_seen,label,network) VALUES (?,?,?,?,?,?,?)",
-      [hash, sid, userId, now, now, label, network],
+      "INSERT INTO user_sessions (sid_hash,sid,user_id,created_at,last_seen,label,network,active) VALUES (?,?,?,?,?,?,?,?)",
+      [hash, sid, userId, now, now, label, network, 0],
     );
   });
 }
@@ -119,8 +128,12 @@ export async function activateLogin(db, { sid, userId, now, network }) {
       [sid, userId],
     );
     if (!current) return { active: 0, dropped: 0 };
+    await tx.run(
+      "UPDATE user_sessions SET active=1, last_seen=? WHERE sid=? AND user_id=?",
+      [now, sid, userId],
+    );
     const others = await tx.all(
-      "SELECT sid, network FROM user_sessions WHERE user_id=? AND sid<>? ORDER BY created_at ASC, sid_hash ASC",
+      "SELECT sid, network FROM user_sessions WHERE user_id=? AND sid<>? AND active=1 ORDER BY created_at ASC, sid_hash ASC",
       [userId, sid],
     );
     let dropped = 0;
@@ -131,9 +144,19 @@ export async function activateLogin(db, { sid, userId, now, network }) {
       dropped += 1;
     }
     if (dropped)
-      await addNotice(tx, { userId, kind: "excess_login", separate: false, now });
+      await addNotice(tx, {
+        userId,
+        kind: "excess_login",
+        separate: false,
+        now,
+      });
     if (others.some((row) => row.network && row.network !== network))
-      await addNotice(tx, { userId, kind: "unusual_place", separate: false, now });
+      await addNotice(tx, {
+        userId,
+        kind: "unusual_place",
+        separate: false,
+        now,
+      });
     return { active: others.length + 1, dropped };
   });
 }
@@ -141,19 +164,22 @@ export async function activateLogin(db, { sid, userId, now, network }) {
 export async function touchSession(db, sid, userId, now) {
   const hash = sessionHash(sid);
   const row = await db.get(
-    "SELECT sid_hash, last_seen FROM user_sessions WHERE sid_hash=? AND user_id=?",
+    "SELECT sid_hash, last_seen FROM user_sessions WHERE sid_hash=? AND user_id=? AND active=1",
     [hash, userId],
   );
   if (!row) return false;
   if (now - Number(row.last_seen) > 60000)
-    await db.run("UPDATE user_sessions SET last_seen=? WHERE sid_hash=?", [now, hash]);
+    await db.run("UPDATE user_sessions SET last_seen=? WHERE sid_hash=?", [
+      now,
+      hash,
+    ]);
   return true;
 }
 
 export async function listSessions(db, userId, sid) {
   const current = sessionHash(sid);
   const rows = await db.all(
-    "SELECT sid_hash, created_at, last_seen, label, network FROM user_sessions WHERE user_id=? ORDER BY created_at ASC, sid_hash ASC",
+    "SELECT sid_hash, created_at, last_seen, label, network FROM user_sessions WHERE user_id=? AND active=1 ORDER BY created_at ASC, sid_hash ASC",
     [userId],
   );
   return rows.map((row) => ({
@@ -168,8 +194,12 @@ export async function listSessions(db, userId, sid) {
 
 export async function listNotices(db, user) {
   const rows = await db.all(
-    `SELECT id, kind, separate, created_at FROM account_notices
-     WHERE user_id=? OR (email IS NOT NULL AND lower(email)=lower(?))
+    `SELECT id, kind, separate, created_at FROM (
+       SELECT id, kind, separate, created_at FROM account_notices WHERE user_id=?
+       UNION
+       SELECT id, kind, separate, created_at FROM account_notices
+       WHERE email IS NOT NULL AND lower(email)=lower(?)
+     ) notices
      ORDER BY created_at DESC LIMIT 10`,
     [user.id, user.email],
   );

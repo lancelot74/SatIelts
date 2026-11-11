@@ -27,9 +27,44 @@
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ],
   "regions": ["hnd1"],
+  "headers": [
+    {
+      "source": "/assets/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    },
+    {
+      "source": "/media/samples/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=2592000" }
+      ]
+    },
+    {
+      "source": "/logo.webp",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=2592000" }
+      ]
+    },
+    {
+      "source": "/logo.png",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=2592000" }
+      ]
+    },
+    {
+      "source": "/og.png",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=2592000" }
+      ]
+    }
+  ],
   "functions": {
     "api/index.mjs": {
-      "includeFiles": "content/*.json,server/schema.postgres.sql",
+      "includeFiles": "{content/*.json,server/schema.postgres.sql,migrations/*.sql}",
       "excludeFiles": "{public,private}/media/**"
     }
   }

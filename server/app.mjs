@@ -1,7 +1,7 @@
 import express from "express";
 import session from "express-session";
 import helmet from "helmet";
-import { rateLimit } from "express-rate-limit";
+import { ipKeyGenerator, rateLimit } from "express-rate-limit";
 import {
   randomBytes,
   randomUUID,
@@ -12,6 +12,11 @@ import path from "node:path";
 import fs from "node:fs";
 import { OAuth2Client } from "google-auth-library";
 import { SqliteSessionStore, prepareRuns } from "./db.mjs";
+import { scheduleRetention } from "./retention.mjs";
+import {
+  DatabaseRateLimitStore,
+  useDatabaseRateLimits,
+} from "./rate-limit-store.mjs";
 import { exams, examById } from "./content.mjs";
 import {
   getTest,
@@ -22,7 +27,14 @@ import {
   testSummary,
 } from "./tests.mjs";
 import { fullModes, fullSetNumbers, fullVariants } from "./full.mjs";
-import { createOrder, activateOrder, activeEntitlement, linkFriendEntitlements, grantTimedAccess, revokeOrder } from "./orders.mjs";
+import {
+  createOrder,
+  activateOrder,
+  activeEntitlement,
+  linkFriendEntitlements,
+  grantTimedAccess,
+  revokeOrder,
+} from "./orders.mjs";
 import { tokenMatches } from "./sms.mjs";
 import { ingestSms, linkSmsEvent, noteSmsHit } from "./sms-ingest.mjs";
 import {
@@ -35,7 +47,7 @@ import {
   registerLogin,
   revokeOtherSessions,
   revokeSession,
-  touchSession,
+  sessionHash,
 } from "./sessions.mjs";
 import { mediaTarget, sendMedia } from "./media.mjs";
 const CANONICAL_ORIGIN = "https://eightsteppe.org";
@@ -58,8 +70,67 @@ const asRun = (row) => {
 const same = (a, b) =>
   typeof a === "string" &&
   typeof b === "string" &&
+  a.length > 0 &&
   Buffer.byteLength(a) === Buffer.byteLength(b) &&
   timingSafeEqual(Buffer.from(a), Buffer.from(b));
+const CSRF_COOKIE = "studyroom.csrf";
+const PUBLIC_CACHE = "public, s-maxage=300, stale-while-revalidate=86400";
+function readCookie(req, name) {
+  const header = req.headers.cookie;
+  if (!header) return "";
+  for (const part of header.split(";")) {
+    const trimmed = part.trim();
+    const eq = trimmed.indexOf("=");
+    if (eq === -1 || trimmed.slice(0, eq) !== name) continue;
+    try {
+      return decodeURIComponent(trimmed.slice(eq + 1));
+    } catch {
+      return "";
+    }
+  }
+  return "";
+}
+let catalogPayload;
+function catalogBody() {
+  if (catalogPayload) return catalogPayload;
+  catalogPayload = exams.map(({ guide, ...e }) => ({
+    ...e,
+    count: 5,
+    topics: e.topics.slice(0, 5),
+    modes: practiceModes[e.id].map((mode) => ({
+      id: mode.id,
+      label: mode.label,
+      sample: testSummary(getTest(e.id, `${mode.id}-sample`)),
+      tests: Array.from({ length: 5 }, (_, i) =>
+        testSummary(getTest(e.id, `${mode.id}-${i + 1}`)),
+      ),
+    })),
+    tests: Array.from({ length: 5 }, (_, i) => {
+      const t = getTest(e.id, String(i + 1));
+      return {
+        number: i + 1,
+        minutes: t.minutes,
+        count: t.questions.length,
+        sections: [...new Set(t.questions.map((q) => q.section))],
+      };
+    }),
+    books: fullModes(e.id).map((mode) => ({
+      id: mode.id,
+      label: mode.label,
+      tests: fullSetNumbers(e.id).map((number) =>
+        testSummary(
+          fullVariants[
+            `${e.id}-${mode.id === "length" ? `length-${number}` : `length-${mode.id}-${number}`}`
+          ],
+        ),
+      ),
+    })),
+  }));
+  return catalogPayload;
+}
+const guides = JSON.parse(
+  fs.readFileSync(new URL("../content/guides.json", import.meta.url), "utf8"),
+);
 function publicOrder(order) {
   return {
     code: order.code,
@@ -76,6 +147,8 @@ function publicOrder(order) {
 }
 export function createApp({ db, config, oauthClient, now = Date.now }) {
   prepareRuns(db);
+  catalogBody();
+  scheduleRetention(db);
   const app = express();
   const oauth =
     oauthClient ??
@@ -114,50 +187,122 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
     }),
   );
   app.use(express.json({ limit: "1mb" }));
-  const sessionMiddleware = session({
-      name: "studyroom.sid",
-      secret: config.sessionSecret,
-      store: new SqliteSessionStore(db),
-      proxy: Boolean(config.trustProxy),
-      resave: false,
-      saveUninitialized: false,
-      cookie: {
-        httpOnly: true,
-        sameSite: "lax",
-        secure: Boolean(config.production),
-        maxAge: 7 * 86400000,
-      },
+  // Catalog and guides are public. They stay in front of the session middleware
+  // so a new visitor does not open a session row.
+  app.get("/api/catalog", (_req, res) => {
+    res.set("Cache-Control", PUBLIC_CACHE);
+    res.json(catalogBody());
+  });
+  app.get("/api/guides/:exam", (req, res) => {
+    const guide = guides[req.params.exam];
+    if (!guide || !examById(req.params.exam))
+      return res.status(404).json({ error: "not_found" });
+    res.set("Cache-Control", PUBLIC_CACHE);
+    res.json(guide);
+  });
+  const limitStore = () =>
+    useDatabaseRateLimits() ? new DatabaseRateLimitStore(db) : undefined;
+  const withStore = (options) => {
+    const store = limitStore();
+    return rateLimit(store ? { ...options, store } : options);
+  };
+  const limitIp = (limit, windowMs) =>
+    withStore({
+      windowMs,
+      limit,
+      keyGenerator: (req) => ipKeyGenerator(req.ip || "127.0.0.1"),
     });
+  const limitUser = (limit, windowMs) =>
+    withStore({
+      windowMs,
+      limit,
+      keyGenerator: (req) => `user:${req.user.id}`,
+      skip: (req) => !req.user,
+    });
+  // Sign-in is limited before a session row is touched.
+  app.use("/api/auth", limitIp(120, 15 * 60 * 1000));
+  const sessionMiddleware = session({
+    name: "studyroom.sid",
+    secret: config.sessionSecret,
+    store: new SqliteSessionStore(db),
+    proxy: Boolean(config.trustProxy),
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: Boolean(config.production),
+      maxAge: 7 * 86400000,
+    },
+  });
   app.use("/api", sessionMiddleware);
   app.use("/media", sessionMiddleware);
+  const issueCsrf = (req, res) => {
+    const existing = readCookie(req, CSRF_COOKIE);
+    if (existing) return existing;
+    const token = random();
+    res.cookie(CSRF_COOKIE, token, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: Boolean(config.production),
+      maxAge: 7 * 86400000,
+      path: "/",
+    });
+    return token;
+  };
   const attachUser = async (req, res, next) => {
     try {
-    res.set("Cache-Control", "private, no-store");
-    if (
-      req.method === "POST" &&
-      req.originalUrl.split("?")[0].replace(/\/+$/, "") === "/api/payments/sms"
-    )
-      return next();
-    req.user = req.session.userId
-      ? await db.get("SELECT id,email,name,google_sub FROM users WHERE id=?", [
-          req.session.userId,
-        ])
-      : null;
-    if (req.user && !(await touchSession(db, req.sessionID, req.user.id, now()))) {
+      res.set("Cache-Control", "private, no-store");
+      if (
+        req.method === "POST" &&
+        req.originalUrl.split("?")[0].replace(/\/+$/, "") ===
+          "/api/payments/sms"
+      )
+        return next();
       req.user = null;
-      await new Promise((resolve) => req.session.destroy(() => resolve()));
-    }
-    req.isAdmin = Boolean(ownerSub) && req.user?.google_sub === ownerSub;
-    if (!req.session) return next();
-    if (!req.session.csrf) req.session.csrf = random();
-    if (!["GET", "HEAD", "OPTIONS"].includes(req.method)) {
+      if (req.session?.userId) {
+        const hash = sessionHash(req.sessionID);
+        const row = await db.get(
+          `SELECT u.id, u.email, u.name, u.google_sub, us.last_seen, us.active
+         FROM users u
+         LEFT JOIN user_sessions us ON us.user_id=u.id AND us.sid_hash=?
+         WHERE u.id=?`,
+          [hash, req.session.userId],
+        );
+      if (!row) {
+        req.user = null;
+      } else if (row.last_seen == null) {
+        await new Promise((resolve) => req.session.destroy(() => resolve()));
+      } else if (Number(row.active) === 0) {
+        req.user = null;
+      } else {
+          req.user = {
+            id: asNumber(row.id),
+            email: row.email,
+            name: row.name,
+            google_sub: row.google_sub,
+          };
+          if (now() - Number(row.last_seen) > 60000)
+            await db.run(
+              "UPDATE user_sessions SET last_seen=? WHERE sid_hash=?",
+              [now(), hash],
+            );
+        }
+      }
+      req.isAdmin = Boolean(ownerSub) && req.user?.google_sub === ownerSub;
+      if (!req.session) return next();
+      if (!["GET", "HEAD", "OPTIONS"].includes(req.method)) {
+      const bodyToken =
+        req.body && typeof req.body.csrf === "string" ? req.body.csrf : "";
+      const expected = req.session.csrf || readCookie(req, CSRF_COOKIE);
+      const provided = req.get("x-csrf-token") || bodyToken;
       if (
         (req.get("origin") && req.get("origin") !== config.origin) ||
-        !same(req.get("x-csrf-token"), req.session.csrf)
+        !same(provided, expected)
       )
-        return res.status(403).json({ error: "csrf" });
-    }
-    next();
+          return res.status(403).json({ error: "csrf" });
+      }
+      next();
     } catch (error) {
       next(error);
     }
@@ -179,19 +324,19 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
     );
   const authorizeTest = async (req, res, next) => {
     try {
-    if (
-      !examById(req.params.exam) ||
-      !getTest(req.params.exam, req.params.number)
-    )
-      return res.status(404).json({ error: "not_found" });
-    if (
-      !isSample(getTest(req.params.exam, req.params.number)) &&
-      !(await hasAccess(req, req.params.exam))
-    )
-      return res
-        .status(req.user ? 403 : 401)
-        .json({ error: req.user ? "access_required" : "login_required" });
-    next();
+      if (
+        !examById(req.params.exam) ||
+        !getTest(req.params.exam, req.params.number)
+      )
+        return res.status(404).json({ error: "not_found" });
+      if (
+        !isSample(getTest(req.params.exam, req.params.number)) &&
+        !(await hasAccess(req, req.params.exam))
+      )
+        return res
+          .status(req.user ? 403 : 401)
+          .json({ error: req.user ? "access_required" : "login_required" });
+      next();
     } catch (error) {
       next(error);
     }
@@ -206,128 +351,97 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
   });
   app.get("/api/session", async (req, res, next) => {
     try {
-    const entitlement = req.user
-      ? await activeEntitlement(db, req.user, now())
-      : null;
-    res.json({
-      user: req.user
-        ? {
-            id: req.user.id,
-            email: req.user.email,
-            name: req.user.name,
-            isAdmin: req.isAdmin,
-          }
-        : null,
-      csrf: req.session?.csrf,
-      authAvailable,
-      grants: entitlement ? ["ielts", "toefl", "sat"] : [],
-      access: entitlement
-        ? { active: true, endsAt: Number(entitlement.ends_at) }
-        : { active: false, endsAt: null },
-      sessions: req.user ? await listSessions(db, req.user.id, req.sessionID) : [],
-      notices: req.user ? await listNotices(db, req.user) : [],
-      orders: req.user
-        ? await db.all(
-            "SELECT code,plan,group_size,amount_mnt,status,expires_at,paid_at FROM orders WHERE user_id=? ORDER BY created_at DESC",
+      const csrf = req.session?.csrf || issueCsrf(req, res);
+      if (!req.user) {
+        res.json({
+          user: null,
+          csrf,
+          authAvailable,
+          grants: [],
+          access: { active: false, endsAt: null },
+          sessions: [],
+          notices: [],
+          orders: [],
+          requests: [],
+        });
+        return;
+      }
+      const [entitlement, sessions, notices, orders, requests] =
+        await Promise.all([
+          activeEntitlement(db, req.user, now()),
+          listSessions(db, req.user.id, req.sessionID),
+          listNotices(db, req.user),
+          db.all(
+            "SELECT code,plan,group_size,amount_mnt,status,expires_at,paid_at FROM orders WHERE user_id=? ORDER BY created_at DESC LIMIT 20",
             [req.user.id],
-          )
-        : [],
-      requests: req.user
-        ? await db.all(
+          ),
+          db.all(
             "SELECT exam,status,plan FROM access_requests WHERE user_id=?",
             [req.user.id],
-          )
-        : [],
-    });
+          ),
+        ]);
+      res.json({
+        user: {
+          id: req.user.id,
+          email: req.user.email,
+          name: req.user.name,
+          isAdmin: req.isAdmin,
+        },
+        csrf,
+        authAvailable,
+        grants: entitlement ? ["ielts", "toefl", "sat"] : [],
+        access: entitlement
+          ? { active: true, endsAt: Number(entitlement.ends_at) }
+          : { active: false, endsAt: null },
+        sessions,
+        notices,
+        orders,
+        requests,
+      });
     } catch (error) {
       next(error);
     }
   });
-  let catalogPayload;
-  function catalog() {
-    if (catalogPayload) return catalogPayload;
-    catalogPayload = exams.map(({ guide, ...e }) => ({
-        ...e,
-        count: 5,
-        topics: e.topics.slice(0, 5),
-        modes: practiceModes[e.id].map((mode) => ({
-          id: mode.id,
-          label: mode.label,
-          sample: testSummary(getTest(e.id, `${mode.id}-sample`)),
-          tests: Array.from({ length: 5 }, (_, i) =>
-            testSummary(getTest(e.id, `${mode.id}-${i + 1}`)),
-          ),
-        })),
-        tests: Array.from({ length: 5 }, (_, i) => {
-          const t = getTest(e.id, String(i + 1));
-          return {
-            number: i + 1,
-            minutes: t.minutes,
-            count: t.questions.length,
-            sections: [...new Set(t.questions.map((q) => q.section))],
-          };
-        }),
-        books: fullModes(e.id).map((mode) => ({
-          id: mode.id,
-          label: mode.label,
-          tests: fullSetNumbers(e.id).map((number) =>
-            testSummary(
-              fullVariants[
-                `${e.id}-${mode.id === "length" ? `length-${number}` : `length-${mode.id}-${number}`}`
-              ],
-            ),
-          ),
-        })),
-      }));
-    return catalogPayload;
-  }
-  app.get("/api/catalog", (_req, res) => {
-    res.json(catalog());
+  // In-memory counters are per instance. RATE_LIMIT_STORE=postgres shares them
+  // through rate_limit_hits. There is no Upstash client in this process.
+  app.get("/api/auth/google", (req, res) => {
+    if (!authAvailable) return res.redirect("/login?error=not_configured");
+    const verifier = random();
+    const state = random();
+    const nonce = random();
+    const pathOnly =
+      typeof req.query.next === "string" ? req.query.next.split("?")[0] : "";
+    const nextOk =
+      /^\/(ielts|toefl|sat|account|admin)(\/[^?#]*)?$/.test(pathOnly) ||
+      pathOnly === "/checkout" ||
+      /^\/checkout\/ES-\d{4,5}$/.test(pathOnly);
+    const destination = nextOk ? req.query.next.split("#")[0] : "/account";
+    const plan =
+      req.query.plan === "week" || req.query.plan === "month"
+        ? req.query.plan
+        : "";
+    const group = req.query.group === "3" ? "3" : "1";
+    req.session.oauth = {
+      state,
+      nonce,
+      verifier,
+      created: now(),
+      next: destination,
+      plan,
+      group,
+    };
+    const url = oauth.generateAuthUrl({
+      scope: ["openid", "email", "profile"],
+      state,
+      nonce,
+      code_challenge: createHash("sha256").update(verifier).digest("base64url"),
+      code_challenge_method: "S256",
+      prompt: "select_account",
+    });
+    req.session.save((err) =>
+      err ? res.redirect("/login?error=sign_in_failed") : res.redirect(url),
+    );
   });
-  app.get(
-    "/api/auth/google",
-    rateLimit({ windowMs: 15 * 60 * 1000, limit: 30 }),
-    (req, res) => {
-      if (!authAvailable) return res.redirect("/login?error=not_configured");
-      const verifier = random();
-      const state = random();
-      const nonce = random();
-      const pathOnly =
-        typeof req.query.next === "string" ? req.query.next.split("?")[0] : "";
-      const nextOk =
-        /^\/(ielts|toefl|sat|account|admin)(\/[^?#]*)?$/.test(pathOnly) ||
-        pathOnly === "/checkout" ||
-        /^\/checkout\/ES-\d{4,5}$/.test(pathOnly);
-      const destination = nextOk ? req.query.next.split("#")[0] : "/account";
-      const plan =
-        req.query.plan === "week" || req.query.plan === "month"
-          ? req.query.plan
-          : "";
-      const group = req.query.group === "3" ? "3" : "1";
-      req.session.oauth = {
-        state,
-        nonce,
-        verifier,
-        created: now(),
-        next: destination,
-        plan,
-        group,
-      };
-      const url = oauth.generateAuthUrl({
-        scope: ["openid", "email", "profile"],
-        state,
-        nonce,
-        code_challenge: createHash("sha256")
-          .update(verifier)
-          .digest("base64url"),
-        code_challenge_method: "S256",
-        prompt: "select_account",
-      });
-      req.session.save((err) =>
-        err ? res.redirect("/login?error=sign_in_failed") : res.redirect(url),
-      );
-    },
-  );
   app.get("/api/auth/google/callback", async (req, res) => {
     const pending = req.session.oauth;
     delete req.session.oauth;
@@ -364,9 +478,10 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
           String(profile.name || profile.email).slice(0, 120),
         ],
       );
-      const user = await db.get("SELECT id,email FROM users WHERE google_sub=?", [
-        profile.sub,
-      ]);
+      const user = await db.get(
+        "SELECT id,email FROM users WHERE google_sub=?",
+        [profile.sub],
+      );
       await linkFriendEntitlements(db, user, now());
       const network = coarseNetwork(req.ip);
       const label = deviceLabel(req.get("user-agent"));
@@ -446,59 +561,67 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
   });
   app.post(
     "/api/tests/:exam/:number/start",
-    rateLimit({ windowMs: 60000, limit: 20 }),
+    limitIp(200, 60000),
+    limitUser(20, 60000),
     authorizeTest,
     async (req, res, next) => {
       try {
-      const test = getTest(req.params.exam, req.params.number);
-      const ids = req.session.runs ?? [];
-      let previous = null;
-      if (req.user)
-        previous = asRun(
-          await db.get(
-            "SELECT * FROM runs WHERE user_id=? AND exam=? AND test_number=? AND result IS NULL ORDER BY started_at DESC LIMIT 1",
-            [req.user.id, test.exam, String(test.number)],
-          ),
-        );
-      else
-        for (const id of ids) {
-          const row = asRun(
-            await db.get("SELECT * FROM runs WHERE id=?", [id]),
+        const test = getTest(req.params.exam, req.params.number);
+        const ids = req.session.runs ?? [];
+        let previous = null;
+        if (req.user)
+          previous = asRun(
+            await db.get(
+              "SELECT * FROM runs WHERE user_id=? AND exam=? AND test_number=? AND result IS NULL ORDER BY started_at DESC LIMIT 1",
+              [req.user.id, test.exam, String(test.number)],
+            ),
           );
-          if (
-            row &&
-            row.exam === test.exam &&
-            row.test_number === String(test.number) &&
-            !row.result
-          ) {
-            previous = row;
-            break;
+        else
+          for (const id of ids) {
+            const row = asRun(
+              await db.get("SELECT * FROM runs WHERE id=?", [id]),
+            );
+            if (
+              row &&
+              row.exam === test.exam &&
+              row.test_number === String(test.number) &&
+              !row.result
+            ) {
+              previous = row;
+              break;
+            }
           }
+        let run = previous;
+        if (!run) {
+          const id = randomUUID(),
+            start = now(),
+            deadline = start + test.minutes * 60000;
+          await db.run(
+            "INSERT INTO runs (id,user_id,exam,test_number,started_at,deadline) VALUES (?,?,?,?,?,?)",
+            [
+              id,
+              req.user?.id ?? null,
+              test.exam,
+              String(test.number),
+              start,
+              deadline,
+            ],
+          );
+          run = asRun(await db.get("SELECT * FROM runs WHERE id=?", [id]));
         }
-      let run = previous;
-      if (!run) {
-        const id = randomUUID(),
-          start = now(),
-          deadline = start + test.minutes * 60000;
-        await db.run(
-          "INSERT INTO runs (id,user_id,exam,test_number,started_at,deadline) VALUES (?,?,?,?,?,?)",
-          [
-            id,
-            req.user?.id ?? null,
-            test.exam,
-            String(test.number),
-            start,
-            deadline,
-          ],
-        );
-        run = asRun(await db.get("SELECT * FROM runs WHERE id=?", [id]));
-      }
-      req.session.runs = [...new Set([...ids, run.id])].slice(-25);
+        if (!req.user && !ids.includes(run.id)) {
+          if (!req.session.csrf) {
+            const cookie = readCookie(req, CSRF_COOKIE);
+            if (cookie) req.session.csrf = cookie;
+          }
+          req.session.runs = [...ids, run.id].slice(-25);
+        }
       res.json({
         runId: run.id,
         deadline: run.deadline,
         serverNow: now(),
         answers: JSON.parse(run.answers),
+        answersRev: Number(run.answers_rev) || 0,
         test: publicTest(test),
       });
       } catch (error) {
@@ -508,22 +631,22 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
   );
   const ownedRun = async (req, res, next) => {
     try {
-    const run = asRun(
-      await db.get("SELECT * FROM runs WHERE id=?", [req.params.id]),
-    );
-    if (
-      !run ||
-      (!(req.user && run.user_id === req.user.id) &&
-        !(run.user_id === null && (req.session.runs ?? []).includes(run.id)))
-    )
-      return res.status(404).json({ error: "not_found" });
-    if (
-      !isSample(getTest(run.exam, run.test_number)) &&
-      !(await hasAccess(req, run.exam))
-    )
-      return res.status(403).json({ error: "access_required" });
-    req.run = run;
-    next();
+      const run = asRun(
+        await db.get("SELECT * FROM runs WHERE id=?", [req.params.id]),
+      );
+      if (
+        !run ||
+        (!(req.user && run.user_id === req.user.id) &&
+          !(run.user_id === null && (req.session.runs ?? []).includes(run.id)))
+      )
+        return res.status(404).json({ error: "not_found" });
+      if (
+        !isSample(getTest(run.exam, run.test_number)) &&
+        !(await hasAccess(req, run.exam))
+      )
+        return res.status(403).json({ error: "access_required" });
+      req.run = run;
+      next();
     } catch (error) {
       next(error);
     }
@@ -545,74 +668,111 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
     );
   app.put("/api/runs/:id/answers", ownedRun, async (req, res, next) => {
     try {
-    const run = req.run,
-      test = getTest(run.exam, run.test_number);
-    if (run.result || now() >= run.deadline)
-      return res.status(409).json({ error: "time_up" });
-    if (!validAnswers(test, req.body.answers))
-      return res.status(400).json({ error: "invalid_answers" });
-    await db.run("UPDATE runs SET answers=? WHERE id=?", [
-      JSON.stringify(req.body.answers),
-      run.id,
-    ]);
-    res.json({ saved: true, serverNow: now() });
+      const run = req.run,
+        test = getTest(run.exam, run.test_number);
+      if (run.result || now() >= run.deadline)
+        return res.status(409).json({ error: "time_up" });
+      if (!validAnswers(test, req.body.answers))
+        return res.status(400).json({ error: "invalid_answers" });
+      const stored = Number(run.answers_rev) || 0;
+      const rev =
+        Number.isInteger(req.body?.revision) && req.body.revision > 0
+          ? req.body.revision
+          : stored + 1;
+      const updated = await db.get(
+        `UPDATE runs SET answers=?, answers_rev=?
+         WHERE id=? AND result IS NULL AND deadline>? AND answers_rev<?
+         RETURNING answers_rev`,
+        [JSON.stringify(req.body.answers), rev, run.id, now(), rev],
+      );
+      if (!updated) {
+        const current = await db.get(
+          "SELECT answers_rev, result, deadline FROM runs WHERE id=?",
+          [run.id],
+        );
+        if (!current || current.result || now() >= Number(current.deadline))
+          return res.status(409).json({ error: "time_up" });
+        return res.json({
+          saved: true,
+          stale: true,
+          revision: Number(current.answers_rev) || 0,
+          serverNow: now(),
+        });
+      }
+      res.json({ saved: true, revision: rev, serverNow: now() });
     } catch (error) {
       next(error);
     }
   });
   app.post("/api/runs/:id/submit", ownedRun, async (req, res, next) => {
     try {
-    const run = req.run,
-      test = getTest(run.exam, run.test_number);
-    if (run.result) return res.json(JSON.parse(run.result));
-    let answers = JSON.parse(run.answers);
-    const expired = now() >= run.deadline;
-    if (!expired && req.body.answers !== undefined) {
-      if (!validAnswers(test, req.body.answers))
-        return res.status(400).json({ error: "invalid_answers" });
-      answers = req.body.answers;
-    }
-    const result = {
-      ...grade(test, answers),
-      runId: run.id,
-      exam: run.exam,
-      number: run.test_number,
-      mode: test.mode,
-      set: test.set,
-      expired,
-      finishedAt: now(),
-      durationSeconds: Math.round(
-        (Math.min(now(), run.deadline) - run.started_at) / 1000,
-      ),
-    };
-    await db.run(
-      "UPDATE runs SET result=?,answers=?,finished_at=? WHERE id=?",
-      [JSON.stringify(result), JSON.stringify(answers), now(), run.id],
-    );
-    res.json(result);
+      const run = req.run,
+        test = getTest(run.exam, run.test_number);
+      if (run.result) return res.json(JSON.parse(run.result));
+      let answers = JSON.parse(run.answers);
+      let rev = Number(run.answers_rev) || 0;
+      const expired = now() >= run.deadline;
+      // Once the deadline has passed, the body is ignored. The client flushes
+      // the latest answers while time remains, including in the last few seconds.
+      if (!expired && req.body.answers !== undefined) {
+        if (!validAnswers(test, req.body.answers))
+          return res.status(400).json({ error: "invalid_answers" });
+        const incoming = Number.isInteger(req.body.revision)
+          ? req.body.revision
+          : rev;
+        if (incoming >= rev) {
+          answers = req.body.answers;
+          rev = incoming;
+        }
+      }
+      const result = {
+        ...grade(test, answers),
+        runId: run.id,
+        exam: run.exam,
+        number: run.test_number,
+        mode: test.mode,
+        set: test.set,
+        expired,
+        finishedAt: now(),
+        durationSeconds: Math.round(
+          (Math.min(now(), run.deadline) - run.started_at) / 1000,
+        ),
+      };
+      const claimed = await db.get(
+        "UPDATE runs SET result=?, answers=?, answers_rev=?, finished_at=? WHERE id=? AND result IS NULL RETURNING result",
+        [JSON.stringify(result), JSON.stringify(answers), rev, now(), run.id],
+      );
+      if (!claimed) {
+        const current = await db.get("SELECT result FROM runs WHERE id=?", [
+          run.id,
+        ]);
+        if (current?.result) return res.json(JSON.parse(current.result));
+        return res.status(409).json({ error: "time_up" });
+      }
+      res.json(JSON.parse(claimed.result));
     } catch (error) {
       next(error);
     }
   });
   app.get("/api/account", login, async (req, res, next) => {
     try {
-    res.json({
-      history: (
-        await db.all(
-          "SELECT id,exam,test_number,finished_at,result FROM runs WHERE user_id=? AND result IS NOT NULL ORDER BY finished_at DESC LIMIT 30",
-          [req.user.id],
-        )
-      ).map(({ result, ...r }) => {
-        const parsed = JSON.parse(result);
-        return {
-          ...r,
-          finished_at: Number(r.finished_at),
-          score: parsed.score,
-          total: parsed.total,
-          band: parsed.band ?? null,
-        };
-      }),
-    });
+      res.json({
+        history: (
+          await db.all(
+            "SELECT id,exam,test_number,finished_at,result FROM runs WHERE user_id=? AND result IS NOT NULL ORDER BY finished_at DESC LIMIT 30",
+            [req.user.id],
+          )
+        ).map(({ result, ...r }) => {
+          const parsed = JSON.parse(result);
+          return {
+            ...r,
+            finished_at: Number(r.finished_at),
+            score: parsed.score,
+            total: parsed.total,
+            band: parsed.band ?? null,
+          };
+        }),
+      });
     } catch (error) {
       next(error);
     }
@@ -716,7 +876,9 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
     try {
       const note = String(req.body?.note || "").trim();
       const id = String(req.body?.id || "");
-      const code = String(req.body?.code || "").trim().toUpperCase();
+      const code = String(req.body?.code || "")
+        .trim()
+        .toUpperCase();
       if (note.length < 3 || !id || !/^ES-\d{4,5}$/.test(code))
         return res.status(400).json({ error: "invalid_request" });
       const result = await linkSmsEvent(db, {
@@ -735,26 +897,27 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
   app.post(
     "/api/access-requests",
     login,
-    rateLimit({ windowMs: 60000, limit: 10 }),
+    limitUser(10, 60000),
+    limitIp(120, 60000),
     async (req, res, next) => {
       try {
-      const exam = req.body?.exam;
-      const plan = req.body?.plan ?? null;
-      if (exam === "all") {
-        if (!PLAN_CODES.has(plan))
-          return res.status(400).json({ error: "invalid_plan" });
-        if (await activeEntitlement(db, req.user, now()))
+        const exam = req.body?.exam;
+        const plan = req.body?.plan ?? null;
+        if (exam === "all") {
+          if (!PLAN_CODES.has(plan))
+            return res.status(400).json({ error: "invalid_plan" });
+          if (await activeEntitlement(db, req.user, now()))
+            return res.json({ status: "approved" });
+        } else if (!examById(exam)) {
+          return res.status(400).json({ error: "invalid_exam" });
+        } else if (await hasAccess(req, exam)) {
           return res.json({ status: "approved" });
-      } else if (!examById(exam)) {
-        return res.status(400).json({ error: "invalid_exam" });
-      } else if (await hasAccess(req, exam)) {
-        return res.json({ status: "approved" });
-      }
-      await db.run(
-        "INSERT INTO access_requests (user_id,exam,plan) VALUES (?,?,?) ON CONFLICT(user_id,exam) DO UPDATE SET status='pending',plan=excluded.plan,created_at=CURRENT_TIMESTAMP",
-        [req.user.id, exam, exam === "all" ? plan : null],
-      );
-      res.json({ status: "pending" });
+        }
+        await db.run(
+          "INSERT INTO access_requests (user_id,exam,plan) VALUES (?,?,?) ON CONFLICT(user_id,exam) DO UPDATE SET status='pending',plan=excluded.plan,created_at=CURRENT_TIMESTAMP",
+          [req.user.id, exam, exam === "all" ? plan : null],
+        );
+        res.json({ status: "pending" });
       } catch (error) {
         next(error);
       }
@@ -762,101 +925,113 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
   );
   app.get("/api/admin", admin, async (_req, res, next) => {
     try {
-    res.json({
-      requests: await db.all(
-        "SELECT r.*,u.email,u.name FROM access_requests r JOIN users u ON r.user_id=u.id ORDER BY r.created_at DESC",
-      ),
-      grants: await db.all(
-        "SELECT g.*,u.email,u.name FROM grants g JOIN users u ON g.user_id=u.id ORDER BY g.created_at DESC",
-      ),
-      access: await db.all(
-        `SELECT e.id, e.user_id, e.email, e.ends_at, e.order_id, u.name, o.code
+      res.json({
+        requests: await db.all(
+          "SELECT r.*,u.email,u.name FROM access_requests r JOIN users u ON r.user_id=u.id ORDER BY r.created_at DESC",
+        ),
+        grants: await db.all(
+          "SELECT g.*,u.email,u.name FROM grants g JOIN users u ON g.user_id=u.id ORDER BY g.created_at DESC",
+        ),
+        access: await db.all(
+          `SELECT e.id, e.user_id, e.email, e.ends_at, e.order_id, u.name, o.code
          FROM entitlements e
          LEFT JOIN users u ON u.id=e.user_id
          LEFT JOIN orders o ON o.id=e.order_id
          WHERE e.ends_at>?
          ORDER BY e.ends_at`,
-        [now()],
-      ),
-      orders: await db.all(
-        `SELECT o.*,u.email,u.name,
+          [now()],
+        ),
+        orders: await db.all(
+          `SELECT o.*,u.email,u.name,
            (SELECT MAX(ends_at) FROM entitlements e WHERE e.order_id=o.id) AS ends_at
          FROM orders o JOIN users u ON u.id=o.user_id ORDER BY o.created_at ASC`,
-      ),
-      sms: (
-        await db.all(
-          `SELECT id, account_masked, amount_mnt, utga, order_code, server_received_at, status, unmatched_reason
+        ),
+        sms: (
+          await db.all(
+            `SELECT id, account_masked, amount_mnt, utga, order_code, server_received_at, status, unmatched_reason
            FROM sms_payment_events
            WHERE status IN ('unmatched','rejected')
            ORDER BY created_at DESC
            LIMIT 100`,
-        )
-      ).map((row) => ({
-        ...row,
-        amount_mnt: row.amount_mnt == null ? null : Number(row.amount_mnt),
-        server_received_at: Number(row.server_received_at),
-      })),
-    });
+          )
+        ).map((row) => ({
+          ...row,
+          amount_mnt: row.amount_mnt == null ? null : Number(row.amount_mnt),
+          server_received_at: Number(row.server_received_at),
+        })),
+      });
     } catch (error) {
       next(error);
     }
   });
   app.post("/api/admin/access", admin, async (req, res, next) => {
     try {
-    const userId = Number(req.body?.userId);
-    const { exam, action } = req.body;
-    if (
-      !Number.isInteger(userId) ||
-      !["approve", "revoke", "reject"].includes(action) ||
-      (action !== "approve" && exam && exam !== "all" && !examById(exam)) ||
-      !(await db.get("SELECT id FROM users WHERE id=?", [userId]))
-    )
-      return res.status(400).json({ error: "invalid_request" });
-    const note = String(req.body?.note || "").trim();
-    if (action !== "reject" && note.length < 3)
-      return res.status(400).json({ error: "note_required" });
-    if (action === "approve") {
-      const granted = await db.transaction((tx) =>
-        grantTimedAccess(tx, {
-          userId,
-          days: Number(req.body?.days),
-          actorId: req.user.id,
-          now: now(),
-          note,
-        }),
-      );
-      if (granted.error) return res.status(400).json(granted);
-      await db.run(
-        "UPDATE access_requests SET status='approved' WHERE user_id=?",
-        [userId],
-      );
-      return res.json({ ok: true, endsAt: granted.endsAt });
-    }
-    await db.transaction(async (tx) => {
-      if (action === "revoke") {
-        const orders = await tx.all(
-          "SELECT id FROM orders WHERE user_id=? AND status='paid'",
+      const userId = Number(req.body?.userId);
+      const { exam, action } = req.body;
+      if (
+        !Number.isInteger(userId) ||
+        !["approve", "revoke", "reject"].includes(action) ||
+        (action !== "approve" && exam && exam !== "all" && !examById(exam)) ||
+        !(await db.get("SELECT id FROM users WHERE id=?", [userId]))
+      )
+        return res.status(400).json({ error: "invalid_request" });
+      const note = String(req.body?.note || "").trim();
+      if (action !== "reject" && note.length < 3)
+        return res.status(400).json({ error: "note_required" });
+      if (action === "approve") {
+        const granted = await db.transaction((tx) =>
+          grantTimedAccess(tx, {
+            userId,
+            days: Number(req.body?.days),
+            actorId: req.user.id,
+            now: now(),
+            note,
+          }),
+        );
+        if (granted.error) return res.status(400).json(granted);
+        await db.run(
+          "UPDATE access_requests SET status='approved' WHERE user_id=?",
           [userId],
         );
-        await tx.run("DELETE FROM entitlements WHERE user_id=?", [userId]);
-        for (const order of orders) {
-          await tx.run("DELETE FROM entitlements WHERE order_id=?", [order.id]);
-          await tx.run(
-            "UPDATE orders SET status='revoked' WHERE id=? AND status='paid'",
-            [order.id],
-          );
-        }
+        return res.json({ ok: true, endsAt: granted.endsAt });
       }
-      await tx.run(
-        "UPDATE access_requests SET status=? WHERE user_id=? AND exam=?",
-        [action === "approve" ? "approved" : "rejected", userId, exam || "all"],
-      );
-      await tx.run(
-        "INSERT INTO audit (actor_id,user_id,exam,action,detail) VALUES (?,?,?,?,?)",
-        [req.user.id, userId, exam || "all", action, JSON.stringify({ note })],
-      );
-    });
-    res.json({ ok: true });
+      await db.transaction(async (tx) => {
+        if (action === "revoke") {
+          const orders = await tx.all(
+            "SELECT id FROM orders WHERE user_id=? AND status='paid'",
+            [userId],
+          );
+          await tx.run("DELETE FROM entitlements WHERE user_id=?", [userId]);
+          for (const order of orders) {
+            await tx.run("DELETE FROM entitlements WHERE order_id=?", [
+              order.id,
+            ]);
+            await tx.run(
+              "UPDATE orders SET status='revoked' WHERE id=? AND status='paid'",
+              [order.id],
+            );
+          }
+        }
+        await tx.run(
+          "UPDATE access_requests SET status=? WHERE user_id=? AND exam=?",
+          [
+            action === "approve" ? "approved" : "rejected",
+            userId,
+            exam || "all",
+          ],
+        );
+        await tx.run(
+          "INSERT INTO audit (actor_id,user_id,exam,action,detail) VALUES (?,?,?,?,?)",
+          [
+            req.user.id,
+            userId,
+            exam || "all",
+            action,
+            JSON.stringify({ note }),
+          ],
+        );
+      });
+      res.json({ ok: true });
     } catch (error) {
       next(error);
     }
@@ -864,7 +1039,8 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
   app.post("/api/admin/orders/revoke", admin, async (req, res, next) => {
     try {
       const note = String(req.body?.note || "").trim();
-      if (note.length < 3) return res.status(400).json({ error: "note_required" });
+      if (note.length < 3)
+        return res.status(400).json({ error: "note_required" });
       const result = await revokeOrder(db, {
         code: String(req.body?.code || ""),
         actorId: req.user.id,
@@ -893,7 +1069,10 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
   app.post("/api/sessions/others", login, async (req, res, next) => {
     try {
       res.json(
-        await revokeOtherSessions(db, { userId: req.user.id, sid: req.sessionID }),
+        await revokeOtherSessions(db, {
+          userId: req.user.id,
+          sid: req.sessionID,
+        }),
       );
     } catch (error) {
       next(error);
@@ -901,11 +1080,14 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
   });
   const serveMedia = async (req, res, next) => {
     try {
-      if (!req.user)
-        return res.status(401).json({ error: "login_required" });
+      if (!req.user) return res.status(401).json({ error: "login_required" });
       if (!(await hasAccess(req, req.params.exam)))
         return res.status(403).json({ error: "access_required" });
-      const target = mediaTarget(req.params.exam, req.params.set, req.params.file);
+      const target = mediaTarget(
+        req.params.exam,
+        req.params.set,
+        req.params.file,
+      );
       if (!target || !fs.existsSync(target)) return res.status(404).end();
       sendMedia(req, res, target);
     } catch (error) {
@@ -916,17 +1098,6 @@ export function createApp({ db, config, oauthClient, now = Date.now }) {
   app.head("/media/:exam/:set/:file", serveMedia);
   app.get("/api/media/:exam/:set/:file", serveMedia);
   app.head("/api/media/:exam/:set/:file", serveMedia);
-  app.get("/api/guides/:exam", (req, res) => {
-    if (!examById(req.params.exam))
-      return res.status(404).json({ error: "not_found" });
-    const guides = JSON.parse(
-      fs.readFileSync(
-        new URL("../content/guides.json", import.meta.url),
-        "utf8",
-      ),
-    );
-    res.json(guides[req.params.exam]);
-  });
   app.use("/api", (_req, res) => res.status(404).json({ error: "not_found" }));
   const dist = path.resolve("dist");
   if (fs.existsSync(dist)) {

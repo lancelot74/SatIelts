@@ -14,9 +14,9 @@ const config = {
   adminEmails: "owner@example.com",
   ownerGoogleSub: "owner",
 };
-function fixture() {
+function fixture(initialNow = Date.now()) {
   const db = openDatabase(":memory:");
-  let clock = Date.now(),
+  let clock = initialNow,
     pending;
   const oauthClient = {
     generateAuthUrl(opts) {
@@ -82,12 +82,21 @@ test("hosted postgres uses portable timestamps, placeholders, and locked-down ta
   );
   assert.equal(schema.includes("INSERT OR REPLACE"), false);
   assert.equal(schema.includes("PRAGMA"), false);
-  const boot = fs.readFileSync(new URL("../server/db.mjs", import.meta.url), "utf8");
+  const boot = fs.readFileSync(
+    new URL("../migrations/2026-11-10-baseline.sql", import.meta.url),
+    "utf8",
+  );
   for (const table of ["orders", "entitlements", "sms_payment_events", "user_sessions"])
     assert.equal(boot.includes(table), true);
-  assert.equal(boot.includes("ENABLE ROW LEVEL SECURITY"), true);
-  assert.equal(boot.includes("REVOKE ALL ON TABLE"), true);
-  assert.equal(boot.includes("REVOKE ALL ON SEQUENCE orders_id_seq, entitlements_id_seq"), true);
+  assert.equal(boot.includes("enable row level security"), true);
+  assert.equal(boot.includes("revoke all on table"), true);
+  assert.equal(boot.includes("revoke all on sequence orders_id_seq, entitlements_id_seq"), true);
+  const vercel = JSON.parse(fs.readFileSync(new URL("../vercel.json", import.meta.url), "utf8"));
+  const include = vercel.functions["api/index.mjs"].includeFiles;
+  assert.equal(include.startsWith("{"), true);
+  assert.equal(include.endsWith("}"), true);
+  for (const pattern of ["content/*.json", "server/schema.postgres.sql", "migrations/*.sql"])
+    assert.equal(include.includes(pattern), true);
   assert.equal(fs.existsSync("public/media/ielts/01/listening-part1.mp3"), true);
 });
 test("health reports the open database", async () => {
@@ -345,7 +354,8 @@ test("one plan approval unlocks IELTS, TOEFL, and SAT", async () => {
 });
 
 test("a bank order opens every exam after manual confirmation", async () => {
-  const f = fixture(),
+  // Freeze time inside the 50% sale so the order amount stays 3,500₮.
+  const f = fixture(Date.parse("2026-11-15T12:00:00+08:00")),
     student = f.agent(),
     owner = f.agent();
   const s = await login(student, "payer");
@@ -366,6 +376,19 @@ test("a bank order opens every exam after manual confirmation", async () => {
   await student.get("/api/tests/ielts/1").expect(200);
   await student.get("/api/tests/toefl/1").expect(200);
   await student.get("/api/tests/sat/1").expect(200);
+  f.db.close();
+});
+test("a bank order uses list price after the sale ends", async () => {
+  const f = fixture(Date.parse("2026-12-01T00:00:00+08:00")),
+    student = f.agent();
+  const s = await login(student, "payer");
+  const order = (
+    await mutate(student, "post", "/api/orders", s.csrf, {
+      plan: "week",
+      group: 1,
+    }).expect(200)
+  ).body;
+  assert.equal(order.amount, 7000);
   f.db.close();
 });
 test("CSRF, request validation and logout protect authenticated mutations", async () => {
